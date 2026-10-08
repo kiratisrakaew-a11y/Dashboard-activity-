@@ -369,12 +369,16 @@
       kpi('ต่อรองลดได้รวม', baht(round2(totalSaving)), 'จาก ' + fmt(saved.length) + ' Case ที่มีราคาก่อน–หลังต่อรอง', 'good') +
       kpi('% ลดลง', totalInitial ? fmt(totalSaving / totalInitial * 100, 2) + '%' : '–', 'ถ่วงน้ำหนักด้วยยอดเงิน') +
       '</div>';
-    h += '<div class="grid cols-2" style="margin-top:12px">' +
-      '<div class="card"><h3>Top 10 มูลค่า Case</h3><div class="chart-box" style="height:360px"><canvas id="chRankValue"></canvas></div>' +
-        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ราคาสุดท้าย' +
-        '<span class="legend-dot" style="background:' + cssVar('--muted') + '"></span>ราคาเสนอแรก / ประมาณการ</div></div>' +
-      '<div class="card"><h3>Top 10 ยอดที่ต่อรองลดราคาได้ (บาท)</h3><div class="chart-box" style="height:360px"><canvas id="chRankSaving"></canvas></div>' +
-        '<div class="small muted">นับเฉพาะ Case ที่มีทั้งราคาก่อนและหลังต่อรอง</div></div>' +
+    var sortBy = rankPeriod.sort === 'saving' ? 'saving' : 'value';
+    h += '<div class="card" style="margin-top:12px"><div class="card-head"><h3>Top 10 Case — มูลค่า และยอดที่ต่อรองลดได้</h3>' +
+        '<div><span class="small muted">เรียงตาม </span><div class="seg" id="rankSort">' +
+        '<button data-sort="value" class="' + (sortBy === 'value' ? 'active' : '') + '">มูลค่า Case</button>' +
+        '<button data-sort="saving" class="' + (sortBy === 'saving' ? 'active' : '') + '">ยอดที่ลดได้</button></div></div></div>' +
+        '<div class="chart-box" style="height:440px"><canvas id="chRank"></canvas></div>' +
+        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ราคาสุดท้าย (มูลค่า Case)' +
+        '<span class="legend-dot" style="background:' + cssVar('--good') + '"></span>ยอดที่ต่อรองลดได้' +
+        '<span class="legend-dot" style="background:' + cssVar('--muted') + '"></span>ยังไม่มีราคาสุดท้าย (ใช้ราคาเสนอแรก / ประมาณการ)' +
+        ' · ความยาวทั้งแท่ง = ราคาตั้งต้นก่อนต่อรอง · ตัวเลขท้ายแท่ง = ลดได้กี่ % และกี่บาท</div></div>' +
       '</div><p class="small muted">👆 คลิกที่แท่งเพื่อดูรายละเอียด Case และ Activity · ช่วงเวลานับตามวันที่สรุปผล (Activity CLOSED ล่าสุด) — ' +
       'Case ที่ยังไม่สรุปผลใช้วันที่ Activity ล่าสุด · ตัวเลขราคา AI ดึงจากข้อความ Activity ถ้าไม่ถูกให้แก้ข้อความใน DB หรือกด "ตรวจทั้ง Case ใหม่"</p>';
     $('tab-ranking').innerHTML = h;
@@ -390,35 +394,57 @@
       $('rankDate').addEventListener('change', function () { if (this.value) { rankPeriod.date = this.value; renderRanking(); } });
     }
 
-    function caseLabel(c) { var t = c.ref || ''; return c.id.replace(/^[A-Z]+-\d{4}-/, '') + ' · ' + (t.length > 28 ? t.slice(0, 28) + '…' : t); }
-    function topChart(id, list, valueOf, color, tip) {
-      var top = list.slice().sort(function (a, b) { return valueOf(b) - valueOf(a); }).slice(0, 10);
-      if (!top.length) {
-        if (charts[id]) { charts[id].destroy(); delete charts[id]; }
-        $(id).parentNode.innerHTML = '<div class="muted" style="padding:40px 0;text-align:center">ไม่มีข้อมูลในช่วงนี้</div>';
-        return;
-      }
-      chart(id, pickable({ type: 'bar', data: { labels: top.map(caseLabel),
-        datasets: [{ data: top.map(valueOf), backgroundColor: top.map(color), borderRadius: 4 }] },
-        options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
-          tooltip: { callbacks: { title: function (it) { var c = top[it[0].dataIndex]; return c.id + ' · ' + c.ref; },
-            label: function (ctx) { return tip(top[ctx.dataIndex]); } } } },
-          scales: { x: { beginAtZero: true, ticks: { callback: function (v) { return fmt(v); } } } } } },
-      function (i) { openCase(top[i].id, r); }));
+    $('rankSort').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      rankPeriod.sort = b.dataset.sort; renderRanking();
+    });
+
+    function caseLabel(c) { var t = c.ref || ''; return c.id.replace(/^[A-Z]+-\d{4}-/, '') + ' · ' + (t.length > 34 ? t.slice(0, 34) + '…' : t); }
+    // แท่งเดียวต่อ Case: [ราคาสุดท้าย][ลดได้] → ความยาวรวม = ราคาตั้งต้น
+    function finalOf(c) { return c.savings ? c.savings.final * c.savings.quantity : c.value.value; }
+    function savingOf(c) { return c.savings ? c.savings.saving : 0; }
+    var src = sortBy === 'saving' ? saved : valued;
+    var top = src.slice().sort(function (a, b) {
+      return sortBy === 'saving' ? savingOf(b) - savingOf(a) || finalOf(b) - finalOf(a) : finalOf(b) - finalOf(a);
+    }).slice(0, 10);
+    if (!top.length) {
+      if (charts.chRank) { charts.chRank.destroy(); delete charts.chRank; }
+      $('chRank').parentNode.innerHTML = '<div class="muted" style="padding:40px 0;text-align:center">ไม่มีข้อมูลราคาในช่วงนี้</div>';
+      return;
     }
-    topChart('chRankValue', valued, function (c) { return c.value.value; },
-      function (c) { return c.value.basis === 'final' ? cssVar('--accent') : cssVar('--muted'); },
-      function (c) {
-        return [baht(c.value.value) + ' · ' + BASIS_LABEL[c.value.basis], 'Buyer: ' + nameOf(c.buyer) + ' · ' + c.method + ' · ' + c.stageLabel,
-          (c.closedDate ? 'สรุปผล ' : 'Activity ล่าสุด ') + c.rankDate];
+    var endLabel = { id: 'endLabel', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx, meta = ch.getDatasetMeta(1);
+      ctx.save(); ctx.font = '500 12px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle';
+      top.forEach(function (c, i) {
+        var el = meta.data[i]; if (!el) return;
+        var txt, color;
+        if (c.savings) { txt = '−' + fmt(c.savings.pct, 1) + '% · ลด ' + baht(c.savings.saving); color = cssVar('--good'); }
+        else { txt = c.value.basis === 'final' ? 'ไม่มีราคาตั้งต้น' : 'ยังไม่มีราคาสุดท้าย'; color = cssVar('--muted'); }
+        ctx.fillStyle = color; ctx.fillText(txt, el.x + 6, el.y);
       });
-    topChart('chRankSaving', saved, function (c) { return c.savings.saving; }, function () { return cssVar('--good'); },
-      function (c) {
-        var s = c.savings;
-        return ['ลดได้ ' + baht(s.saving) + ' (' + pctTxt(s.pct) + ')',
-          baht(s.initial) + ' → ' + baht(s.final) + (s.quantity > 1 ? ' × ' + fmt(s.quantity) : ''),
-          'Buyer: ' + nameOf(c.buyer) + (s.vendor ? ' · Vendor: ' + s.vendor : '')];
-      });
+      ctx.restore();
+    } };
+    chart('chRank', pickable({ type: 'bar', data: { labels: top.map(caseLabel), datasets: [
+        { label: 'ราคาสุดท้าย', data: top.map(finalOf), borderRadius: 4,
+          backgroundColor: top.map(function (c) { return c.savings || c.value.basis === 'final' ? cssVar('--accent') : cssVar('--muted'); }) },
+        { label: 'ลดได้', data: top.map(savingOf), backgroundColor: cssVar('--good'), borderRadius: 4 }
+      ] },
+      plugins: [endLabel],
+      options: { indexAxis: 'y', maintainAspectRatio: false, layout: { padding: { right: 8 } },
+        interaction: { mode: 'index', axis: 'y', intersect: true },
+        plugins: { legend: { display: false },
+          tooltip: { filter: function (it) { return it.datasetIndex === 0; }, callbacks: {
+            title: function (it) { var c = top[it[0].dataIndex]; return c.id + ' · ' + (c.ref.length > 60 ? c.ref.slice(0, 60) + '…' : c.ref); },
+            label: function (ctx) {
+              var c = top[ctx.dataIndex], s = c.savings;
+              var out = s ? ['ราคาตั้งต้น ' + baht(s.initial * s.quantity) + ' → ราคาสุดท้าย ' + baht(s.final * s.quantity),
+                'ลดได้ ' + baht(s.saving) + ' (' + pctTxt(s.pct) + ')'] : ['มูลค่า ' + baht(c.value.value) + ' · ' + BASIS_LABEL[c.value.basis]];
+              out.push(nameOf(c.buyer) + ' · ' + c.method + ' · ' + (c.closedDate ? 'สรุปผล ' : 'ล่าสุด ') + c.rankDate);
+              return out;
+            } } } },
+        scales: { x: { stacked: true, beginAtZero: true, grace: '22%', ticks: { callback: function (v) { return fmt(v); } } },
+          y: { stacked: true } } } },
+    function (i) { openCase(top[i].id, r); }));
   }
   function round2(n) { return Math.round(n * 100) / 100; }
 
