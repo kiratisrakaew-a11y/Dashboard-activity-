@@ -220,6 +220,7 @@ function computeDashboard_(data) {
       vendorsNegotiated: Object.keys(negoSet).length,
       hasNegotiation: list.some(function (a) { return a.type === 'NEGOTIATION'; }),
       hasClosedActivity: stage === 3,
+      caseReviewEligible: stage === 3 || c.Status === 'CLOSED',
       stale: open && (lastDay === null ? (reqDay !== null && today - reqDay > cfg.STALE_DAYS) : today - lastDay > cfg.STALE_DAYS),
       avgScore: avg_(scores),
       savings: sav,
@@ -308,7 +309,8 @@ function computeDashboard_(data) {
   var caseRev = withActs.filter(function (c) { return c.caseReview; });
   aiSummary.cases = {
     reviewed: caseRev.length,
-    pending: withActs.filter(function (c) { return !c.caseReview || c.caseReview.stale; }).length,
+    pending: withActs.filter(function (c) { return c.caseReviewEligible && (!c.caseReview || c.caseReview.stale); }).length,
+    waitingClose: withActs.filter(function (c) { return !c.caseReviewEligible; }).length,
     avgScore: avg_(caseRev.map(function (c) { return c.caseReview.score; })),
     readyToClose: caseRev.filter(function (c) { return c.caseReview.readyToClose && c.status === 'OPEN'; }).length,
     withInconsistency: caseRev.filter(function (c) { return c.caseReview.inconsistencies.length > 0; }).length,

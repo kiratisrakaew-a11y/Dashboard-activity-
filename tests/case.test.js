@@ -25,11 +25,12 @@ test('caseFingerprint_ เปลี่ยนเมื่อเพิ่ม/แ�
 test('pendingCases_ ตรวจ Case ที่มี Activity ใหม่ ข้าม Case ที่ไม่มี Activity และที่ไม่เปลี่ยน', () => {
   const C2 = { ...CASE, Case_ID: 'C2' };
   const C3 = { ...CASE, Case_ID: 'C3' };
-  const B1 = { ...A1, Activity_ID: 'B1', Case_ID: 'C2', Updated_At: '2026-10-05T00:00:00.000Z' };
+  const B1 = { ...A1, Activity_ID: 'B1', Case_ID: 'C2', Activity_Type: 'CLOSED', Updated_At: '2026-10-05T00:00:00.000Z' };
   const acts = { C1: [A1], C2: [B1] };
   const reviewed = { C1: { hash: G.caseFingerprint_(CASE, [A1], 'v') } };
   assert.deepEqual(plain(G.pendingCases_([CASE, C2, C3], acts, reviewed, 'v').map(c => c.Case_ID)), ['C2']);
-  // เพิ่ม A2 เข้า C1 ที่เคยตรวจแล้ว → ต้องกลับมาตรวจใหม่ และเรียงตาม Activity ล่าสุด
+  // C1 มีแค่ CONTACT VENDOR (ยังไม่สรุปผล) → ไม่เข้าคิว แม้จะเคยถูกกดตรวจเอง
+  // เพิ่ม A2 (CLOSED) เข้า C1 → สรุปผลแล้วและมีการเปลี่ยนแปลง → ต้องเข้าคิว เรียงตาม Activity ล่าสุด
   acts.C1 = [A1, { ...A2, Updated_At: '2026-10-07T00:00:00.000Z' }];
   assert.deepEqual(plain(G.pendingCases_([CASE, C2, C3], acts, reviewed, 'v').map(c => c.Case_ID)), ['C1', 'C2']);
 });
@@ -79,7 +80,11 @@ test('Dashboard ใช้ savings จาก Case review ก่อน และ�
   assert.equal(c1.savings.saving, 50000);
   assert.equal(c1.savings.source, 'case');
   assert.equal(c1.caseReview.readyToClose, true);
-  assert.deepEqual(plain(dash.ai.cases), { reviewed: 1, pending: 1, avgScore: 80, readyToClose: 1, withInconsistency: 1, highRisk: 1 });
+  // C2 มีแค่ CONTACT VENDOR → ยังไม่สรุปผล ไม่นับว่ารอตรวจ
+  assert.deepEqual(plain(dash.ai.cases), { reviewed: 1, pending: 0, waitingClose: 1, avgScore: 80, readyToClose: 1,
+    withInconsistency: 1, highRisk: 1 });
+  assert.equal(dash.cases.find(c => c.id === 'C1').caseReviewEligible, true);
+  assert.equal(dash.cases.find(c => c.id === 'C2').caseReviewEligible, false);
   const h = G.checkDataHealth_(d, dash);
   assert.ok(h.issues.some(i => i.code === 'CASE_AI_INCONSISTENT' && i.caseId === 'C1'));
   // ไม่มี Case review → ใช้วิธีเดิมจาก Activity
@@ -108,4 +113,15 @@ test('scoreCriteria_ จับคู่ชื่อเกณฑ์ที่ AI �
   assert.equal(r3.criteria.length, 3);
   assert.equal(r3.score, 33);
   assert.equal(r3.criteria[0].comment, '(AI ไม่ได้ประเมินเกณฑ์นี้)');
+});
+
+test('caseReviewEligible_: ตรวจทั้ง Case เมื่อมี Activity CLOSED หรือสถานะ CLOSED เท่านั้น', () => {
+  assert.equal(G.caseReviewEligible_(CASE, [A1]), false);                       // CONTACT VENDOR อย่างเดียว
+  assert.equal(G.caseReviewEligible_(CASE, [A1, { ...A1, Activity_Type: 'NEGOTIATION' }]), false);
+  assert.equal(G.caseReviewEligible_(CASE, [A1, A2]), true);                    // มี CLOSED
+  assert.equal(G.caseReviewEligible_({ ...CASE, Status: 'CLOSED' }, [A1]), true);
+  assert.equal(G.caseReviewEligible_({ ...CASE, Status: 'CANCELLED' }, [A1]), false);
+  // ยังไม่สรุปผลและไม่เคยตรวจ → ไม่เข้าคิว
+  assert.equal(G.pendingCases_([CASE], { C1: [A1] }, {}, 'v').length, 0);
+  assert.equal(G.pendingCases_([CASE], { C1: [A1, A2] }, {}, 'v').length, 1);
 });

@@ -47,7 +47,9 @@ function loadData_() {
   var actsByCase = groupActsByCase_(activities);
   cases.forEach(function (c) {
     var r = caseReviews[c.Case_ID];
-    if (r) r.stale = r.hash !== caseFingerprint_(c, actsByCase[c.Case_ID] || [], caseCritVer);
+    var acts = actsByCase[c.Case_ID] || [];
+    // ยังไม่สรุปผล → ไม่ตรวจอัตโนมัติ จึงไม่ติดป้ายรอตรวจ (ผลที่เคยกดตรวจเองยังแสดงได้)
+    if (r) r.stale = caseReviewEligible_(c, acts) && r.hash !== caseFingerprint_(c, acts, caseCritVer);
   });
   // ส่งเฉพาะ vendor ที่ถูกอ้างถึง
   var allVendors = DbReader.readVendorsMap();

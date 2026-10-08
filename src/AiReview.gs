@@ -302,7 +302,13 @@ function caseFingerprint_(caseRow, acts, critVer) {
     caseRow.Budget_Type, critVer, parts.join('\u241D')].join('\u241F'));
 }
 
-/** Case ที่ต้องตรวจ (มี Activity อย่างน้อย 1 และยังไม่เคยตรวจ/มีการเปลี่ยนแปลง) — Activity ล่าสุดก่อน */
+/** ตรวจทั้ง Case อัตโนมัติเฉพาะเมื่อถึงขั้นสรุปผล: มี Activity ประเภท CLOSED หรือ Case มีสถานะ CLOSED */
+function caseReviewEligible_(caseRow, acts) {
+  if (caseRow && caseRow.Status === 'CLOSED') return true;
+  return (acts || []).some(function (a) { return a.Activity_Type === 'CLOSED'; });
+}
+
+/** Case ที่ต้องตรวจ (สรุปผลแล้ว และยังไม่เคยตรวจ/มีการเปลี่ยนแปลงหลังตรวจ) — Activity ล่าสุดก่อน */
 function pendingCases_(cases, actsByCase, caseReviews, critVer) {
   function latest(id) {
     return (actsByCase[id] || []).reduce(function (m, a) {
@@ -312,7 +318,7 @@ function pendingCases_(cases, actsByCase, caseReviews, critVer) {
   }
   return cases.filter(function (c) {
     var acts = actsByCase[c.Case_ID] || [];
-    if (!acts.length) return false;
+    if (!acts.length || !caseReviewEligible_(c, acts)) return false;
     var r = caseReviews[c.Case_ID];
     return !r || r.hash !== caseFingerprint_(c, acts, critVer);
   }).sort(function (x, y) { return latest(y.Case_ID).localeCompare(latest(x.Case_ID)); });

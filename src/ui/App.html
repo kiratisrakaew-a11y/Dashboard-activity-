@@ -379,7 +379,7 @@
     if (f.flag === 'readyToClose' && !(cr && cr.readyToClose)) return false;
     if (f.flag === 'inconsistent' && !(cr && cr.inconsistencies.length)) return false;
     if (f.flag === 'caseLow' && !(cr && cr.score < D.settings.SCORE_THRESHOLD)) return false;
-    if (f.flag === 'casePending' && !(c.activityCount && (!cr || cr.stale))) return false;
+    if (f.flag === 'casePending' && !(c.activityCount && c.caseReviewEligible && (!cr || cr.stale))) return false;
     if (f.flag === 'fewQuotes' && !(c.hasClosedActivity && c.method === 'NORMAL' && c.vendorsContacted < D.settings.MIN_QUOTES)) return false;
     if (f.q) {
       var s = (c.id + ' ' + c.ref + ' ' + c.requester + ' ' + c.subType).toLowerCase();
@@ -488,7 +488,8 @@
   function caseBadge(c) {
     var cr = c.caseReview;
     if (!c.activityCount) return '<span class="badge">–</span>';
-    if (!cr) return '<span class="badge">รอตรวจ</span>';
+    if (!cr) return c.caseReviewEligible ? '<span class="badge">รอตรวจ</span>'
+      : '<span class="badge" title="AI จะตรวจทั้ง Case เมื่อมี Activity ประเภท CLOSED (สรุปผล)">รอสรุปผล</span>';
     return gradeBadge(cr.score, cr.grade, cr.stale) +
       (cr.readyToClose && c.status === 'OPEN' ? ' <span class="badge good">พร้อมปิด</span>' : '') +
       (cr.inconsistencies.length ? ' <span class="badge bad" title="' + esc(cr.inconsistencies.join(' / ')) + '">ขัดกัน</span>' : '');
@@ -497,8 +498,12 @@
   function caseReviewBlock(c) {
     if (!c.activityCount) return '';
     var cr = c.caseReview;
-    var btn = '<button class="btn ghost" data-review-case="' + esc(c.id) + '" style="margin-left:auto">' + (cr ? 'ตรวจทั้ง Case ใหม่' : 'ตรวจทั้ง Case ตอนนี้') + '</button>';
-    if (!cr) return '<h2>AI สรุปทั้ง Case</h2><div class="review"><div class="tl-head"><span class="muted">ยังไม่ได้ตรวจทั้ง Case</span>' + btn + '</div></div>';
+    var btn = '<button class="btn ghost" data-review-case="' + esc(c.id) + '" style="margin-left:auto">' +
+      (cr ? 'ตรวจทั้ง Case ใหม่' : (c.caseReviewEligible ? 'ตรวจทั้ง Case ตอนนี้' : 'ตรวจตอนนี้ (ก่อนสรุปผล)')) + '</button>';
+    var waitNote = c.caseReviewEligible ? '' :
+      '<div class="small muted">AI จะตรวจทั้ง Case อัตโนมัติเมื่อมี Activity ประเภท CLOSED (สรุปผล) — ตอนนี้กดตรวจเองได้ถ้าต้องการดูสถานะกลางทาง</div>';
+    if (!cr) return '<h2>AI สรุปทั้ง Case</h2><div class="review"><div class="tl-head"><span class="muted">' +
+      (c.caseReviewEligible ? 'ยังไม่ได้ตรวจทั้ง Case' : 'ยังไม่ถึงขั้นสรุปผล') + '</span>' + btn + '</div>' + waitNote + '</div>';
     var riskCls = { low: 'good', medium: 'warn', high: 'bad' }[cr.risk] || '';
     var riskTh = { low: 'ต่ำ', medium: 'กลาง', high: 'สูง' }[cr.risk] || cr.risk;
     var h = '<h2>AI สรุปทั้ง Case</h2><div class="review"><div class="tl-head">' + gradeBadge(cr.score, cr.grade, cr.stale) +
@@ -506,6 +511,7 @@
       '<span class="badge ' + riskCls + '">ความเสี่ยง ' + esc(riskTh) + '</span>' +
       '<span class="small muted">' + esc(String(cr.reviewedAt).slice(0, 16).replace('T', ' ')) + ' · ' + fmt(cr.activityCount) + ' Activity</span>' + btn + '</div>' +
       (cr.stale ? '<div class="small" style="color:var(--warn)">* มี Activity ใหม่/ถูกแก้หลังจากตรวจ — รอตรวจใหม่</div>' : '') +
+      (!c.caseReviewEligible ? '<div class="small muted">ผลนี้ตรวจก่อนสรุปผล (กดตรวจเอง) — จะตรวจใหม่อัตโนมัติเมื่อมี Activity CLOSED</div>' : '') +
       '<div style="margin:6px 0">' + esc(cr.summary) + '</div>' +
       '<ul class="crit">' + (cr.criteria || []).map(function (x) {
         var icon = x.result === 'yes' ? '✓' : x.result === 'partial' ? '◐' : '✗';
@@ -566,7 +572,7 @@
       '</div>';
     var ac = ai.cases || {};
     h += '<h2>AI ตรวจทั้ง Case</h2><div class="grid kpis">' +
-      kpi('คะแนนเฉลี่ยทั้ง Case', ac.avgScore == null ? '–' : fmt(ac.avgScore, 1), 'ตรวจแล้ว ' + fmt(ac.reviewed) + ' · รอตรวจ ' + fmt(ac.pending) + ' Case', scoreClass(ac.avgScore), 'cases:casePending:') +
+      kpi('คะแนนเฉลี่ยทั้ง Case', ac.avgScore == null ? '–' : fmt(ac.avgScore, 1), 'ตรวจแล้ว ' + fmt(ac.reviewed) + ' · รอตรวจ ' + fmt(ac.pending) + ' · ยังไม่สรุปผล ' + fmt(ac.waitingClose) + ' Case', scoreClass(ac.avgScore), 'cases:casePending:') +
       kpi('พร้อมปิด / ส่งอนุมัติ', fmt(ac.readyToClose), 'Case ที่ยัง OPEN', ac.readyToClose ? 'good' : '', 'cases:readyToClose:OPEN') +
       kpi('ข้อมูลขัดกัน', fmt(ac.withInconsistency), 'ตัวเลข/Vendor ไม่ตรงกันระหว่าง Activity', ac.withInconsistency ? 'bad' : 'good', 'cases:inconsistent:') +
       kpi('ความเสี่ยงสูง', fmt(ac.highRisk), 'Case ที่ยัง OPEN', ac.highRisk ? 'bad' : 'good') +
