@@ -7,7 +7,7 @@
  * ส่วนบนของไฟล์เป็น pure function (ทดสอบด้วย Node ได้) ส่วนล่างเป็นงานที่เรียก service ของ GAS
  */
 
-var PROMPT_VERSION = 'v1';
+var PROMPT_VERSION = 'v2'; // v2: แก้การจับคู่ชื่อเกณฑ์ที่มีเลขลำดับนำหน้า
 var ACTIVITY_TYPES = ['CONTACT VENDOR', 'FOLLOW_UP', 'NEGOTIATION', 'CLOSED', 'OTHER'];
 
 var GENERIC_CRITERIA = [
@@ -108,7 +108,7 @@ function buildPrompt_(a, caseRow, vendorName, criteria) {
     'หน้าที่: ประเมินว่าข้อความ Activity_Description เขียนได้ครบตามเกณฑ์ที่กำหนดหรือไม่ เพื่อให้หัวหน้าใช้โค้ชทีม',
     '',
     'กติกา:',
-    '- ประเมินทุกเกณฑ์ตามลำดับที่ให้มา ใช้ชื่อเกณฑ์ (name) ตรงตามที่ให้ทุกตัวอักษร',
+    '- ประเมินทุกเกณฑ์ตามลำดับที่ให้มา ใช้ชื่อเกณฑ์ (name) ตรงตามที่ให้ทุกตัวอักษร โดยไม่ใส่เลขลำดับนำหน้า',
     '- result = "yes" ถ้าระบุชัดเจน, "partial" ถ้ากล่าวถึงแต่ไม่ครบ/คลุมเครือ, "no" ถ้าไม่มีเลย',
     '- ตัดสินจากข้อความที่ให้เท่านั้น ห้ามเดาข้อมูลที่ไม่ได้เขียน',
     '- ข้อมูล Next_Action ที่กรอกแยกช่องนับเป็น "ขั้นตอนต่อไป" ได้',
@@ -167,19 +167,37 @@ function numOrNull_(v) {
 function scoreCriteria_(aiCriteria, expected) {
   if (!Array.isArray(aiCriteria) || !aiCriteria.length) throw new Error('AI ไม่ได้ส่งผลรายเกณฑ์');
   var weight = { yes: 1, partial: 0.5, no: 0 };
-  var crit = aiCriteria.map(function (c) {
+  var got = aiCriteria.map(function (c) {
     var res = String(c && c.result || '').toLowerCase();
     if (!(res in weight)) res = 'no';
-    return { name: String(c.name || ''), result: res, comment: String(c.comment || '') };
+    return { name: String(c && c.name || ''), result: res, comment: String(c && c.comment || '') };
   });
-  var names = {};
-  crit.forEach(function (c) { names[c.name] = 1; });
-  (expected || []).forEach(function (n) {
-    if (!names[n]) crit.push({ name: n, result: 'no', comment: '(AI ไม่ได้ประเมินเกณฑ์นี้)' });
-  });
+  var crit;
+  if (expected && expected.length) {
+    // จับคู่ด้วยชื่อที่ normalize แล้ว (ตัดเลขลำดับ/สัญลักษณ์นำหน้า) — โมเดลมักใส่ "1. " นำหน้า
+    var byKey = {};
+    got.forEach(function (c) { var k = criterionKey_(c.name); if (k && !byKey[k]) byKey[k] = c; });
+    var sameCount = got.length === expected.length;
+    crit = expected.map(function (name, i) {
+      var hit = byKey[criterionKey_(name)] || (sameCount ? got[i] : null);
+      return hit ? { name: name, result: hit.result, comment: hit.comment }
+        : { name: name, result: 'no', comment: '(AI ไม่ได้ประเมินเกณฑ์นี้)' };
+    });
+  } else {
+    crit = got;
+  }
   var total = crit.reduce(function (s, c) { return s + weight[c.result]; }, 0);
   var score = Math.round(total / crit.length * 100);
   return { score: score, grade: gradeOf_(score), criteria: crit };
+}
+
+/** คีย์สำหรับเทียบชื่อเกณฑ์: ตัดเลขลำดับ ("1.", "2)", "ข้อ 3") สัญลักษณ์นำหน้า และช่องว่าง */
+function criterionKey_(name) {
+  return String(name || '')
+    .replace(/^\s*(ข้อ\s*)?\d+\s*[.)\]:-]?\s*/, '')
+    .replace(/^[\s•\-*✓✗◐]+/, '')
+    .replace(/\s+/g, '')
+    .toLowerCase();
 }
 
 /** ตรวจโครงสร้างผลจาก AI และคำนวณคะแนนเอง (ไม่เชื่อคะแนนจากโมเดล) */
@@ -210,7 +228,7 @@ function validateReview_(obj, criteria) {
 
 // ============================ ระดับ Case ============================
 
-var CASE_PROMPT_VERSION = 'c1';
+var CASE_PROMPT_VERSION = 'c2'; // c2: แก้การจับคู่ชื่อเกณฑ์ที่มีเลขลำดับนำหน้า
 
 /** เกณฑ์ตั้งต้นของการตรวจทั้ง Case (ชีต Criteria แถว Activity_Type = CASE แทนที่ได้) */
 var CASE_DEFAULT_CRITERIA = {
@@ -306,7 +324,7 @@ function buildCasePrompt_(caseRow, acts, vendors, criteria) {
     'หน้าที่: อ่านบันทึกกิจกรรม (timeline) ทั้งหมดของ Case แล้วประเมินภาพรวมตามเกณฑ์ เพื่อให้หัวหน้าเห็นสถานะและสิ่งที่ต้องติดตาม',
     '',
     'กติกา:',
-    '- ประเมินทุกเกณฑ์ตามลำดับ ใช้ชื่อเกณฑ์ (name) ตรงตามที่ให้ทุกตัวอักษร',
+    '- ประเมินทุกเกณฑ์ตามลำดับ ใช้ชื่อเกณฑ์ (name) ตรงตามที่ให้ทุกตัวอักษร โดยไม่ใส่เลขลำดับนำหน้า',
     '- result = "yes" ถ้าทั้ง Case มีข้อมูลนี้ชัดเจน, "partial" ถ้ามีแต่ไม่ครบ, "no" ถ้าไม่มี',
     '- ข้อมูลที่อยู่ใน Activity ใดก็ได้ใน Case นับว่ามีแล้ว ไม่ต้องซ้ำทุก Activity',
     '- ตัดสินจากข้อความที่ให้เท่านั้น ห้ามเดาข้อมูลที่ไม่ได้เขียน',

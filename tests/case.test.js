@@ -87,3 +87,25 @@ test('Dashboard ใช้ savings จาก Case review ก่อน และ�
   const c1b = G.computeDashboard_(d).cases.find(c => c.id === 'C1');
   assert.equal(c1b.savings.source, 'activity');
 });
+
+test('scoreCriteria_ จับคู่ชื่อเกณฑ์ที่ AI ใส่เลขลำดับนำหน้า (ไม่เติมซ้ำ)', () => {
+  const expected = ['ระบุเหตุผลที่ใช้ Vendor รายเดียว', 'มีราคาอ้างอิง', 'Next action ล่าสุดชัดเจน'];
+  const ai = [
+    { name: '1. ระบุเหตุผลที่ใช้ Vendor รายเดียว', result: 'no', comment: 'ไม่พบ' },
+    { name: '2) มีราคาอ้างอิง', result: 'yes', comment: '' },
+    { name: 'ข้อ 3 Next action ล่าสุดชัดเจน', result: 'yes', comment: '' }
+  ];
+  const r = G.scoreCriteria_(ai, expected);
+  assert.equal(r.criteria.length, 3);
+  assert.equal(r.score, 67);
+  assert.deepEqual(plain(r.criteria.map(c => c.name)), expected);
+  assert.ok(!r.criteria.some(c => /ไม่ได้ประเมิน/.test(c.comment)));
+  // ชื่อเพี้ยนแต่จำนวนเท่ากัน → จับคู่ตามลำดับ
+  const r2 = G.scoreCriteria_([{ name: 'x', result: 'yes' }, { name: 'y', result: 'yes' }, { name: 'z', result: 'no' }], expected);
+  assert.equal(r2.score, 67);
+  // ตอบไม่ครบจริง → ข้อที่ขาดนับเป็น no
+  const r3 = G.scoreCriteria_([{ name: 'มีราคาอ้างอิง', result: 'yes' }], expected);
+  assert.equal(r3.criteria.length, 3);
+  assert.equal(r3.score, 33);
+  assert.equal(r3.criteria[0].comment, '(AI ไม่ได้ประเมินเกณฑ์นี้)');
+});
