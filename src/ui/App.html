@@ -4,6 +4,8 @@
   var D = null;               // dashboard payload
   var charts = {};
   var caseFilter = { buyer: '', dept: '', method: '', status: 'OPEN', flag: '', q: '' };
+  var methodScope = 'OPEN';   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
+  var lastDrill = null;       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
 
   // ---------------- helpers ----------------
   function $(id) { return document.getElementById(id); }
@@ -66,13 +68,25 @@
   function sortedEntries(obj) {
     return Object.keys(obj || {}).map(function (k) { return [k, obj[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
   }
-  function hbar(id, obj, labeler) {
+  /** ทำให้กราฟคลิกได้: onPick(index, datasetIndex) เมื่อคลิกแท่ง/ชิ้น/จุด */
+  function pickable(cfg, onPick) {
+    cfg.options = cfg.options || {};
+    cfg.options.onClick = function (evt, els) { if (els && els.length) onPick(els[0].index, els[0].datasetIndex); };
+    cfg.options.onHover = function (evt, els) {
+      var t = evt.native && evt.native.target; if (t) t.style.cursor = els && els.length ? 'pointer' : 'default';
+    };
+    return cfg;
+  }
+  function hbar(id, obj, labeler, onPick) {
     var e = sortedEntries(obj);
-    chart(id, { type: 'bar', data: { labels: e.map(function (x) { return labeler ? labeler(x[0]) : x[0]; }),
+    var cfg = { type: 'bar', data: { labels: e.map(function (x) { return labeler ? labeler(x[0]) : x[0]; }),
       datasets: [{ data: e.map(function (x) { return x[1]; }), backgroundColor: cssVar('--accent'), borderRadius: 4 }] },
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false } },
-        scales: { x: { ticks: { precision: 0 } } } } });
+        scales: { x: { ticks: { precision: 0 } } } } };
+    chart(id, onPick ? pickable(cfg, function (i) { onPick(e[i][0]); }) : cfg);
   }
+  /** ค่าว่างถูกนับเป็น "(ว่าง)" ฝั่ง server (countBy_) — เทียบให้ตรงกัน */
+  function keyOf(v) { return (v === null || v === undefined || String(v).trim() === '') ? '(ว่าง)' : String(v); }
 
   // ---------------- tabs ----------------
   function showTab(name) {
@@ -114,37 +128,178 @@
 
     h += '<div class="grid cols-2" style="margin-top:12px">' +
       '<div class="card"><h3>Case เปิดอยู่ตาม Buyer</h3><div class="chart-box"><canvas id="chBuyer"></canvas></div></div>' +
+      '<div class="card"><div class="card-head"><h3>สัดส่วน Case NORMAL / SPECIAL</h3><div class="seg" id="methodScope">' +
+        '<button data-scope="OPEN" class="' + (methodScope === 'OPEN' ? 'active' : '') + '">เปิดอยู่</button>' +
+        '<button data-scope="ALL" class="' + (methodScope === 'ALL' ? 'active' : '') + '">ทั้งหมด</button></div></div>' +
+        '<div class="chart-box"><canvas id="chMethod"></canvas></div></div>' +
       '<div class="card"><h3>แนวโน้มรายสัปดาห์</h3><div class="chart-box"><canvas id="chWeekly"></canvas></div></div>' +
       '<div class="card"><h3>Case เปิดอยู่ตามแผนก</h3><div class="chart-box"><canvas id="chDept"></canvas></div></div>' +
       '<div class="card"><h3>ขั้นตอนของ Case ที่เปิดอยู่</h3><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>' +
       '<div class="card"><h3>Budget Type</h3><div class="chart-box"><canvas id="chBudget"></canvas></div></div>' +
       '<div class="card"><h3>ช่องทางที่ใช้ติดต่อ</h3><div class="chart-box"><canvas id="chChannel"></canvas></div></div>' +
-      '<div class="card clickable" data-goto="buyers"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoOverview"></canvas></div></div>' +
-      '<div class="card clickable" data-goto="buyers"><h3>% ที่ต่อรองลดลงได้ ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoPctOverview"></canvas></div></div>' +
-      '</div>';
+      '<div class="card"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoOverview"></canvas></div></div>' +
+      '<div class="card"><h3>% ที่ต่อรองลดลงได้ ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoPctOverview"></canvas></div></div>' +
+      '</div><p class="small muted">👆 คลิกที่แท่ง / ชิ้นของกราฟเพื่อดูรายการ Case หรือ Activity เบื้องหลังตัวเลข แล้วคลิกแถวเพื่อเปิดรายละเอียด Case</p>';
 
     h += '<h2>Next action ที่เลยกำหนด</h2>' + nextActionTable(D.nextActions.overdue, 'ไม่มีรายการเลยกำหนด 🎉');
     h += '<h2>ครบกำหนดวันนี้ / พรุ่งนี้</h2>' + nextActionTable(D.nextActions.dueSoon, 'ไม่มี');
     $('tab-overview').innerHTML = h;
 
-    hbar('chBuyer', D.breakdown.byBuyer, nameOf);
-    hbar('chDept', D.breakdown.byDept, function (c) { return c + ' · ' + label('DEPARTMENT', c); });
-    hbar('chChannel', D.breakdown.byChannel);
-    renderNegoChart('chNegoOverview');
-    renderNegoPctChart('chNegoPctOverview');
+    function openOf(fn) { return D.cases.filter(function (c) { return c.status === 'OPEN' && fn(c); }); }
+    hbar('chBuyer', D.breakdown.byBuyer, nameOf, function (k) {
+      drill('Case เปิดอยู่ของ ' + nameOf(k), openOf(function (c) { return keyOf(c.buyer) === k; }), 'case', { buyer: k === '(ว่าง)' ? '' : k });
+    });
+    hbar('chDept', D.breakdown.byDept, function (c) { return c + ' · ' + label('DEPARTMENT', c); }, function (k) {
+      drill('Case เปิดอยู่ แผนก ' + k + ' · ' + label('DEPARTMENT', k), openOf(function (c) { return keyOf(c.dept) === k; }), 'case', { dept: k === '(ว่าง)' ? '' : k });
+    });
+    hbar('chChannel', D.breakdown.byChannel, null, function (k) {
+      drill('Activity ที่ติดต่อทาง ' + k, D.activities.filter(function (a) { return keyOf(a.channel) === k; }), 'activity');
+    });
+    renderNegoChart('chNegoOverview', drillNego);
+    renderNegoPctChart('chNegoPctOverview', drillNego);
+    renderMethodChart();
+    $('methodScope').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      methodScope = b.dataset.scope;
+      this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+      renderMethodChart();
+    });
     var be = sortedEntries(D.breakdown.byBudget);
     var palette = [cssVar('--accent'), cssVar('--good'), cssVar('--warn'), cssVar('--bad'), cssVar('--muted')];
-    chart('chBudget', { type: 'doughnut', data: { labels: be.map(function (x) { return x[0]; }),
+    chart('chBudget', pickable({ type: 'doughnut', data: { labels: be.map(function (x) { return x[0]; }),
       datasets: [{ data: be.map(function (x) { return x[1]; }), backgroundColor: palette, borderColor: cssVar('--surface') }] },
-      options: { maintainAspectRatio: false, plugins: { legend: { position: 'right' } } } });
-    chart('chFunnel', { type: 'bar', data: { labels: D.funnel.map(function (f) { return f.label; }),
+      options: { maintainAspectRatio: false, plugins: { legend: { position: 'right' }, tooltip: { callbacks: { label: pctLabel } } } } },
+    function (i) {
+      var k = be[i][0];
+      drill('Case เปิดอยู่ Budget ' + k, openOf(function (c) { return keyOf(c.budget) === k; }), 'case');
+    }));
+    chart('chFunnel', pickable({ type: 'bar', data: { labels: D.funnel.map(function (f) { return f.label; }),
       datasets: [{ data: D.funnel.map(function (f) { return f.count; }), backgroundColor: cssVar('--accent'), borderRadius: 4 }] },
-      options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { precision: 0 } } } } });
-    chart('chWeekly', { type: 'bar', data: { labels: D.weekly.map(function (w) { return w.week; }), datasets: [
+      options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { precision: 0 } } } } },
+    function (i) {
+      var f = D.funnel[i];
+      drill('Case เปิดอยู่ ขั้น ' + f.label, openOf(function (c) { return c.stage === f.stage; }), 'case');
+    }));
+    chart('chWeekly', pickable({ type: 'bar', data: { labels: D.weekly.map(function (w) { return w.week; }), datasets: [
       { label: 'Activity', data: D.weekly.map(function (w) { return w.activities; }), backgroundColor: cssVar('--accent'), borderRadius: 4, yAxisID: 'y' },
       { label: 'Case ใหม่', data: D.weekly.map(function (w) { return w.newCases; }), backgroundColor: cssVar('--muted'), borderRadius: 4, yAxisID: 'y' },
       { label: 'คะแนน AI', type: 'line', data: D.weekly.map(function (w) { return w.avgScore; }), borderColor: cssVar('--good'), backgroundColor: cssVar('--good'), yAxisID: 'y2', spanGaps: true }
-    ] }, options: { maintainAspectRatio: false, scales: { y: { ticks: { precision: 0 } }, y2: { position: 'right', min: 0, max: 100, grid: { display: false } } } } });
+    ] }, options: { maintainAspectRatio: false, scales: { y: { ticks: { precision: 0 } }, y2: { position: 'right', min: 0, max: 100, grid: { display: false } } } } },
+    function (i, ds) {
+      var wk = D.weekly[i].week;
+      if (ds === 1) return drill('Case ที่รับเข้ามาในสัปดาห์ ' + wk, D.cases.filter(function (c) { return c.week === wk; }), 'case');
+      var acts = D.activities.filter(function (a) { return a.week === wk; });
+      if (ds === 2) {
+        acts = acts.filter(function (a) { return a.score != null; }).sort(function (a, b) { return a.score - b.score; });
+        return drill('Activity ที่ AI ตรวจแล้ว สัปดาห์ ' + wk + ' (คะแนนต่ำก่อน)', acts, 'activity', null, true);
+      }
+      drill('Activity ในสัปดาห์ ' + wk, acts, 'activity');
+    }));
+  }
+
+  /** tooltip ของ doughnut: จำนวน + % */
+  function pctLabel(ctx) {
+    var total = ctx.dataset.data.reduce(function (s, v) { return s + v; }, 0);
+    return ' ' + ctx.label + ': ' + fmt(ctx.parsed) + ' (' + (total ? fmt(ctx.parsed / total * 100, 1) : 0) + '%)';
+  }
+
+  function renderMethodChart() {
+    var src = methodScope === 'ALL' ? (D.breakdown.byMethodAll || {}) : D.breakdown.byMethod;
+    var order = ['NORMAL', 'SPECIAL'];
+    var keys = order.filter(function (k) { return src[k]; })
+      .concat(Object.keys(src).filter(function (k) { return order.indexOf(k) < 0; }));
+    var total = keys.reduce(function (s, k) { return s + src[k]; }, 0);
+    var colors = { NORMAL: cssVar('--accent'), SPECIAL: cssVar('--warn') };
+    chart('chMethod', pickable({ type: 'doughnut', data: {
+      labels: keys.map(function (k) {
+        return (k === '(ว่าง)' ? k : k + ' · ' + label('METHOD', k)) + ' — ' + fmt(src[k]) + ' (' + (total ? fmt(src[k] / total * 100, 0) : 0) + '%)';
+      }),
+      datasets: [{ data: keys.map(function (k) { return src[k]; }),
+        backgroundColor: keys.map(function (k) { return colors[k] || cssVar('--muted'); }), borderColor: cssVar('--surface') }] },
+      options: { maintainAspectRatio: false, cutout: '55%', plugins: { legend: { position: 'bottom' },
+        tooltip: { callbacks: { label: function (ctx) { return ' ' + ctx.label; } } } } } },
+    function (i) {
+      var k = keys[i];
+      var list = D.cases.filter(function (c) { return keyOf(c.method) === k && (methodScope === 'ALL' || c.status === 'OPEN'); });
+      drill('Case ' + k + (methodScope === 'ALL' ? ' (ทั้งหมด)' : ' ที่เปิดอยู่'), list, 'case',
+        { method: k === '(ว่าง)' ? '' : k, status: methodScope === 'ALL' ? '' : 'OPEN' });
+    }));
+  }
+
+  /** คลิกกราฟต่อรองตาม Buyer → รายการต่อรองของคนนั้น (email = null → ทั้งทีม) */
+  function drillNego(email) {
+    lastDrill = { nego: email };
+    var h;
+    if (email) {
+      h = negoCaseTable(email);
+    } else {
+      var list = D.cases.filter(function (c) { return c.savings; }).sort(function (a, b) { return b.savings.saving - a.savings.saving; });
+      h = '<div class="card table-wrap"><table><thead><tr><th>Case</th><th>เรื่อง</th><th>Buyer</th><th class="num">ราคาตั้งต้น</th>' +
+        '<th class="num">ราคาสุดท้าย</th><th class="num">ลดได้ (บาท)</th><th class="num">% ลดลง</th></tr></thead><tbody>' +
+        list.map(function (c) {
+          var s = c.savings;
+          return '<tr class="clickable" data-case="' + esc(c.id) + '"><td>' + esc(c.id) + '</td><td class="small">' + esc(c.ref) + '</td><td>' + esc(nameOf(c.buyer)) + '</td>' +
+            '<td class="num">' + baht(s.initial) + '</td><td class="num">' + baht(s.final) + '</td><td class="num"><b>' + baht(s.saving) + '</b></td><td class="num">' + pctTxt(s.pct) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    openDrawer(email ? 'ผลการต่อรอง · ' + nameOf(email) : 'ผลการต่อรอง · รวมทั้งทีม', h);
+  }
+
+  function openDrawer(title, html) {
+    $('drawerTitle').textContent = title;
+    $('drawerBody').innerHTML = html;
+    $('drawerBody').scrollTop = 0;
+    $('drawer').classList.remove('hidden'); $('scrim').classList.remove('hidden');
+  }
+
+  /**
+   * แสดงรายการเบื้องหลังตัวเลขในกราฟ (ใน drawer)
+   * kind: 'case' | 'activity' · filter: ค่าที่ใช้กับแท็บ Cases (ถ้ามี) · keepOrder: ไม่ต้องเรียงใหม่
+   */
+  function drill(title, rows, kind, filter, keepOrder) {
+    lastDrill = { title: title, rows: rows, kind: kind, filter: filter, keepOrder: keepOrder };
+    var h = '<div class="drill-head"><span class="muted">' + fmt(rows.length) + ' รายการ</span>' +
+      (filter ? '<button class="btn ghost" id="drillToCases">ดูในแท็บ Cases →</button>' : '') + '</div>';
+    if (!rows.length) {
+      h += '<div class="card muted">ไม่มีรายการ</div>';
+    } else if (kind === 'case') {
+      var cs = keepOrder ? rows : rows.slice().sort(function (a, b) { return (b.ageDays || 0) - (a.ageDays || 0); });
+      h += '<div class="card table-wrap"><table><thead><tr><th>Case</th><th>เรื่อง</th><th>Buyer</th><th>ขั้นตอน</th>' +
+        '<th class="num">อายุ (วัน)</th><th class="num">ล่าสุด (วันก่อน)</th><th>คะแนน AI</th></tr></thead><tbody>' +
+        cs.map(function (c) {
+          return '<tr class="clickable" data-case="' + esc(c.id) + '"><td>' + esc(c.id) +
+            '<div class="small"><span class="badge ' + (c.method === 'SPECIAL' ? 'warn' : 'info') + '">' + esc(c.method || '–') + '</span> ' +
+            '<span class="muted">' + esc(c.status) + '</span></div></td>' +
+            '<td class="desc">' + esc(c.ref) + '<div class="small muted">' + esc(c.dept) + ' · ' + esc(c.budget) + '</div></td>' +
+            '<td>' + esc(nameOf(c.buyer)) + '</td><td>' + esc(c.stageLabel) + '</td>' +
+            '<td class="num">' + fmt(c.ageDays) + '</td><td class="num">' + (c.daysSinceLast == null ? '–' : fmt(c.daysSinceLast)) + '</td>' +
+            '<td>' + (c.avgScore == null ? '<span class="muted">–</span>' : '<span class="badge ' + scoreClass(c.avgScore) + '">' + fmt(c.avgScore, 1) + '</span>') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    } else {
+      var as = keepOrder ? rows : rows.slice().sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+      h += '<div class="card table-wrap"><table><thead><tr><th>วันที่</th><th>Case</th><th>ประเภท</th><th>ช่องทาง</th><th>Buyer</th>' +
+        '<th>รายละเอียด</th><th>คะแนน AI</th></tr></thead><tbody>' +
+        as.map(function (a) {
+          var d = a.desc.length > 90 ? a.desc.slice(0, 90) + '…' : a.desc;
+          return '<tr class="clickable" data-case="' + esc(a.caseId) + '"><td class="small">' + esc(String(a.date).slice(0, 10)) + '</td>' +
+            '<td>' + esc(a.caseId) + '<div class="small muted">' + esc(a.method) + '</div></td>' +
+            '<td><span class="badge info">' + esc(a.type) + '</span></td><td class="small">' + esc(a.channel || '–') + '</td>' +
+            '<td>' + esc(nameOf(a.by)) + '</td><td class="small">' + esc(d) + '</td>' +
+            '<td>' + gradeBadge(a.score, a.grade, a.reviewStale) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+    openDrawer(title, h);
+    var go = $('drillToCases');
+    if (go) go.addEventListener('click', function () {
+      caseFilter = { buyer: '', dept: '', method: '', status: 'OPEN', flag: '', q: '' };
+      Object.keys(filter).forEach(function (k) { caseFilter[k] = filter[k]; });
+      closeDrawer(); renderCases(); showTab('cases');
+    });
+  }
+  function reopenDrill() {
+    var d = lastDrill; if (!d) return;
+    if (d.nego !== undefined) drillNego(d.nego);
+    else drill(d.title, d.rows, d.kind, d.filter, d.keepOrder);
   }
 
   function nextActionTable(list, empty) {
@@ -236,29 +391,32 @@
       '</div>' + unmeasuredTable(email);
     return h;
   }
-  function renderNegoChart(id) {
+  function renderNegoChart(id, onPick) {
     var list = D.buyers.filter(function (b) { return b.nego && b.nego.cases; })
       .sort(function (a, b) { return b.nego.saving - a.nego.saving; });
-    chart(id, { type: 'bar', data: { labels: list.map(function (b) { return b.name; }),
+    var cfg = { type: 'bar', data: { labels: list.map(function (b) { return b.name; }),
       datasets: [{ data: list.map(function (b) { return b.nego.saving; }), backgroundColor: cssVar('--good'), borderRadius: 4 }] },
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
         tooltip: { callbacks: { label: function (ctx) { var n = list[ctx.dataIndex].nego;
           return baht(n.saving) + ' · ลด ' + pctTxt(n.pct) + ' · ' + n.cases + ' Case'; } } } },
-        scales: { x: { ticks: { callback: function (v) { return fmt(v); } } } } } });
+        scales: { x: { ticks: { callback: function (v) { return fmt(v); } } } } } };
+    chart(id, onPick ? pickable(cfg, function (i) { onPick(list[i].email); }) : cfg);
   }
 
-  function renderNegoPctChart(id) {
+  function renderNegoPctChart(id, onPick) {
     var list = D.buyers.filter(function (b) { return b.nego && b.nego.cases && b.nego.pct != null; })
       .sort(function (a, b) { return b.nego.pct - a.nego.pct; });
-    var rows = list.map(function (b) { return { name: b.name, n: b.nego, team: false }; });
+    var rows = list.map(function (b) { return { name: b.name, email: b.email, n: b.nego, team: false }; });
     if (D.nego && D.nego.pct != null) rows.push({ name: 'รวมทั้งทีม', n: D.nego, team: true });
-    chart(id, { type: 'bar', data: { labels: rows.map(function (r) { return r.name; }),
+    var rows2 = rows;
+    var cfg = { type: 'bar', data: { labels: rows.map(function (r) { return r.name; }),
       datasets: [{ data: rows.map(function (r) { return r.n.pct; }),
         backgroundColor: rows.map(function (r) { return r.team ? cssVar('--muted') : cssVar('--accent'); }), borderRadius: 4 }] },
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
         tooltip: { callbacks: { label: function (ctx) { var n = rows[ctx.dataIndex].n;
           return 'ลด ' + pctTxt(n.pct) + ' (เฉลี่ยต่อ Case ' + pctTxt(n.avgPct) + ') · ' + baht(n.saving) + ' · ' + n.cases + ' Case'; } } } },
-        scales: { x: { beginAtZero: true, ticks: { callback: function (v) { return v + '%'; } } } } } });
+        scales: { x: { beginAtZero: true, ticks: { callback: function (v) { return v + '%'; } } } } } };
+    chart(id, onPick ? pickable(cfg, function (i) { onPick(rows2[i].team ? null : rows2[i].email); }) : cfg);
   }
 
   // ---------- การขอราคาเทียบ (จำนวน Vendor ต่อ Case) ----------
@@ -455,7 +613,9 @@
     var acts = D.activities.filter(function (a) { return a.caseId === id; })
       .sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
     $('drawerTitle').textContent = c.id + ' · ' + c.ref;
-    var h = '<div class="kv">' +
+    // เปิดจากรายการในกราฟ (drawer ยังเปิดอยู่) → มีปุ่มกลับ; เปิดจากที่อื่น → ล้างรายการเดิม
+    if ($('drawer').classList.contains('hidden')) lastDrill = null;
+    var h = (lastDrill ? '<button class="btn ghost" id="drillBack" style="margin-bottom:10px">← กลับไปรายการ</button>' : '') + '<div class="kv">' +
       '<div>ผู้ขอ</div><div>' + esc(c.requester) + ' (' + esc(c.dept) + ' · ' + esc(label('DEPARTMENT', c.dept)) + ')</div>' +
       '<div>Buyer</div><div>' + esc(nameOf(c.buyer)) + '</div>' +
       '<div>วิธี / งบ</div><div><span class="badge ' + (c.method === 'SPECIAL' ? 'warn' : 'info') + '">' + esc(c.method) + ' · ' + esc(label('METHOD', c.method)) + '</span> · ' + esc(c.budget) + ' · ' + esc(c.subType) + '</div>' +
@@ -478,7 +638,9 @@
         '<div class="small">' + sheetLink('Activities', a.row, 'เปิดใน Sheet') + '</div>' + reviewBlock(a) + '</div>';
     }).join('') : '<div class="muted">ยังไม่มี Activity</div>') + '</div>';
     $('drawerBody').innerHTML = h;
+    $('drawerBody').scrollTop = 0;
     $('drawer').classList.remove('hidden'); $('scrim').classList.remove('hidden');
+    var back = $('drillBack'); if (back) back.addEventListener('click', reopenDrill);
   }
   function closeDrawer() { $('drawer').classList.add('hidden'); $('scrim').classList.add('hidden'); }
   $('drawerClose').addEventListener('click', closeDrawer);

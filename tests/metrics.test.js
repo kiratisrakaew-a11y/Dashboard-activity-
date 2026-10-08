@@ -195,3 +195,15 @@ test('computeDashboard_: vendorStats ราย Buyer และทั้งที
   assert.equal(dash.vendorStats.negotiatedCases, 1); // C1 มี NEGOTIATION
   assert.equal(dash.vendorStats.negotiatedPct, 50);
 });
+
+test('week ของ Case/Activity ตรงกับ weekly[] และ byMethodAll นับทุก Case (ใช้กับกราฟที่คลิกได้)', () => {
+  const d = fixtures(G);
+  const dash = G.computeDashboard_(d);
+  dash.weekly.forEach((w) => {
+    assert.equal(dash.activities.filter((a) => a.week === w.week).length, w.activities);
+    assert.equal(dash.cases.filter((c) => c.week === w.week).length, w.newCases);
+  });
+  const all = Object.values(dash.breakdown.byMethodAll).reduce((s, n) => s + n, 0);
+  assert.equal(all, dash.cases.length);
+  assert.equal(G.weekKey_(null), '');
+});

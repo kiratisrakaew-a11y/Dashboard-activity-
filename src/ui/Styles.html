@@ -52,6 +52,12 @@
   .kpi.clickable { cursor: pointer; }
   .kpi.clickable:hover { border-color: var(--accent); }
   .chart-box { position: relative; height: 240px; }
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .card-head h3 { margin: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 12px; border: 0; background: transparent; color: var(--muted); padding: 3px 10px; cursor: pointer; }
+  .seg button.active { background: var(--accent); color: #fff; }
+  .drill-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }

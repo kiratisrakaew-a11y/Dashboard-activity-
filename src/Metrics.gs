@@ -120,6 +120,9 @@ function summarizeVendors_(cases, minQuotes) {
   return out;
 }
 
+/** key ของสัปดาห์ (วันจันทร์) — ใช้ร่วมกันระหว่าง weekly[] กับ cases[]/activities[] เพื่อให้คลิกกราฟแล้วกรองตรงกัน */
+function weekKey_(d) { return d === null ? '' : dayStr_(weekStart_(d)); }
+
 function computeDashboard_(data) {
   var cfg = data.cfg, today = data.today;
   var reviews = data.reviews || {};
@@ -138,7 +141,7 @@ function computeDashboard_(data) {
       id: a.Activity_ID, row: a._row, caseId: a.Case_ID, vendorId: a.Vendor_ID || '',
       vendorName: v ? v.name : '', vendorStatus: v ? v.status : '',
       type: a.Activity_Type || '', channel: a.Channel || '', method: methodByCase[a.Case_ID] || '',
-      date: a.Activity_Date, day: dayNum_(a.Activity_Date),
+      date: a.Activity_Date, day: dayNum_(a.Activity_Date), week: weekKey_(dayNum_(a.Activity_Date)),
       by: lower_(a.Performed_By), desc: String(a.Activity_Description || ''),
       nextAction: a.Next_Action || '', nextDate: a.Next_Action_Date || '', nextDay: dayNum_(a.Next_Action_Date),
       nextDone: a.Next_Action_Done === true, version: a.Version,
@@ -209,7 +212,7 @@ function computeDashboard_(data) {
       dept: c.Department_Code || '', method: c.Method || '', budget: c.Budget_Type || '', subType: c.Sub_Type || '',
       buyer: lower_(c.Buyer_Owner), status: c.Status || '', prNo: c.PR_No || '',
       intakeComplete: c.Intake_Complete === true,
-      requestDate: dayStr_(reqDay), requiredDate: dayStr_(reqdDay),
+      requestDate: dayStr_(reqDay), requiredDate: dayStr_(reqdDay), week: weekKey_(reqDay),
       ageDays: reqDay === null ? null : today - reqDay,
       pastRequired: open && reqdDay !== null && reqdDay < today,
       activityCount: list.length,
@@ -268,7 +271,7 @@ function computeDashboard_(data) {
 
   // ---------- Weekly trend ----------
   var weeks = {};
-  function wk(d) { var k = dayStr_(weekStart_(d)); return (weeks[k] = weeks[k] || { week: k, newCases: 0, activities: 0, scores: [] }); }
+  function wk(d) { var k = weekKey_(d); return (weeks[k] = weeks[k] || { week: k, newCases: 0, activities: 0, scores: [] }); }
   cases.forEach(function (c) { var d = dayNum_(c.requestDate); if (d !== null) wk(d).newCases++; });
   acts.forEach(function (a) { if (a.day !== null) { var w = wk(a.day); w.activities++; if (a.score !== null) w.scores.push(a.score); } });
   var weekly = Object.keys(weeks).sort().map(function (k) {
@@ -355,6 +358,7 @@ function computeDashboard_(data) {
       byDept: countBy_(openCases, function (c) { return c.dept; }),
       byBudget: countBy_(openCases, function (c) { return c.budget; }),
       byMethod: countBy_(openCases, function (c) { return c.method; }),
+      byMethodAll: countBy_(cases, function (c) { return c.method; }),
       bySubType: countBy_(openCases, function (c) { return c.subType; }),
       byBuyer: countBy_(openCases, function (c) { return c.buyer; }),
       byActivityType: countBy_(acts, function (a) { return a.type; }),
