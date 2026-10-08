@@ -79,3 +79,44 @@ test('SPECIAL ไม่ถูกตรวจเรื่องจำนวนค
   assert.deepEqual(plain(dash.ai.byMethod), { SPECIAL: { avg: 70, count: 2 } });
   assert.equal(dash.activities.find(a => a.id === 'A1').method, 'SPECIAL');
 });
+
+test('summarizeSavings_: % ถ่วงน้ำหนัก, % เฉลี่ยต่อ Case, จำนวน, เทียบประมาณการ', () => {
+  const mk = (ini, fin, qty, est) => ({ savings: G.computeSavingsFrom_({ initial_price: ini, final_price: fin, quantity: qty,
+    price_basis: qty ? 'per_unit' : 'total', estimate_price: est }) });
+  const cases = [
+    mk(100000, 90000, null, 95000),   // ลด 10,000 (10%) ต่ำกว่าประมาณการ
+    mk(1000, 500, 2, null),           // ลด 500×2 = 1,000 (50%)
+    mk(50000, 50000, null, null),     // ไม่ได้ลด (0%)
+    { savings: null }                 // ไม่มีตัวเลข → ไม่นับ
+  ];
+  const n = G.summarizeSavings_(cases);
+  assert.equal(n.cases, 3);
+  assert.equal(n.initial, 152000);
+  assert.equal(n.saving, 11000);
+  assert.equal(n.pct, 7.24);           // 11000 / 152000
+  assert.equal(n.avgPct, 20);          // (10 + 50 + 0) / 3
+  assert.equal(n.minPct, 0);
+  assert.equal(n.maxPct, 50);
+  assert.equal(n.vsEstimatePct, -5.26); // (90000 - 95000) / 95000
+  const empty = G.summarizeSavings_([]);
+  assert.equal(empty.cases, 0);
+  assert.equal(empty.pct, null);
+  assert.equal(empty.vsEstimatePct, null);
+});
+
+test('computeDashboard_: ผลการต่อรองรายคน และรวมทั้งทีม', () => {
+  const d = fixtures(G);
+  const dash = G.computeDashboard_(d);
+  const a = dash.buyers.find(b => b.email === 'a@x.co');
+  const b = dash.buyers.find(b => b.email === 'b@x.co');
+  assert.equal(a.nego.cases, 1);
+  assert.equal(a.nego.saving, 20000);
+  assert.equal(a.nego.pct, 10);
+  assert.equal(a.nego.vsEstimatePct, 5.88);
+  assert.equal(a.closedCases, 1);
+  assert.equal(b.nego.cases, 0);
+  assert.equal(b.nego.pct, null);
+  assert.equal(dash.nego.saving, 20000);
+  assert.equal(dash.overview.savingsPct, 10);
+  assert.equal(dash.overview.savingsTotal, 20000);
+});

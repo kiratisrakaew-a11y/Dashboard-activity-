@@ -30,6 +30,36 @@ function computeSavingsFrom_(x) {
   };
 }
 
+/**
+ * สรุปผลการต่อรองจากหลาย Case (ใช้ทั้งรายคนและทั้งทีม)
+ *   pct    = % ลดลงแบบถ่วงน้ำหนักด้วยยอดเงิน (ตัวเลขหลัก)
+ *   avgPct = % เฉลี่ยต่อ Case (ดูความสม่ำเสมอ)
+ *   vsEstimatePct = ราคาสุดท้ายเทียบราคาประมาณการ (เฉพาะ Case ที่มีประมาณการ; ติดลบ = ต่ำกว่างบ)
+ */
+function summarizeSavings_(cases) {
+  var list = (cases || []).filter(function (c) { return c.savings; });
+  var initial = 0, saving = 0, finalWithEst = 0, estimate = 0;
+  var pcts = list.map(function (c) {
+    var s = c.savings;
+    initial += s.initial * s.quantity;
+    saving += s.saving;
+    if (s.estimate) { finalWithEst += s.final * s.quantity; estimate += s.estimate * s.quantity; }
+    return s.pct;
+  });
+  return {
+    cases: list.length,
+    initial: round2_(initial),
+    saving: round2_(saving),
+    pct: initial ? round2_(saving / initial * 100) : null,
+    avgPct: pcts.length ? round2_(pcts.reduce(function (a, b) { return a + b; }, 0) / pcts.length) : null,
+    minPct: pcts.length ? Math.min.apply(null, pcts) : null,
+    maxPct: pcts.length ? Math.max.apply(null, pcts) : null,
+    finalWithEst: round2_(finalWithEst),
+    estimate: round2_(estimate),
+    vsEstimatePct: estimate ? round2_((finalWithEst - estimate) / estimate * 100) : null
+  };
+}
+
 function computeDashboard_(data) {
   var cfg = data.cfg, today = data.today;
   var reviews = data.reviews || {};
@@ -95,15 +125,14 @@ function computeDashboard_(data) {
       stage = Math.max(stage, STAGE_RANK[a.type] || 0);
       if (a.vendorId) vendorSet[a.vendorId] = 1;
     });
-    // savings: ใช้ Activity ล่าสุดที่ AI ดึงตัวเลขได้ (ให้ CLOSED มาก่อน)
     // savings: ใช้ผล AI ตรวจทั้ง Case ก่อน ไม่งั้นใช้ Activity ล่าสุดที่ AI ดึงตัวเลขได้ (ให้ CLOSED มาก่อน)
     var cr = (data.caseReviews || {})[c.Case_ID] || null;
     var sav = cr ? computeSavingsFrom_(cr.savings) : null;
-    if (sav) sav.source = 'case';
+    if (sav) { sav.source = 'case'; sav.vendor = (cr.savings && cr.savings.vendor) || ''; }
     if (!sav) {
       list.slice().reverse().sort(function (x, y) { return (y.type === 'CLOSED') - (x.type === 'CLOSED'); })
         .some(function (a) { sav = computeSavings_(reviews[a.id]); return !!sav; });
-      if (sav) sav.source = 'activity';
+      if (sav) { sav.source = 'activity'; sav.vendor = ''; }
     }
     var scores = list.map(function (a) { return a.score; });
     return {
@@ -157,6 +186,8 @@ function computeDashboard_(data) {
       lowScore: reviewed.filter(function (a) { return a.score < cfg.SCORE_THRESHOLD; }).length,
       avgFirstResponseDays: avg_(myCases.map(function (c) { return c.firstResponseDays; })),
       savings: round2_(myCases.reduce(function (s, c) { return s + (c.savings ? c.savings.saving : 0); }, 0)),
+      nego: summarizeSavings_(myCases),
+      closedCases: myCases.filter(function (c) { return c.hasClosedActivity; }).length,
       channels: countBy_(myActs, function (a) { return a.channel; })
     };
   }).sort(function (x, y) { return y.openCases - x.openCases; });
@@ -212,7 +243,8 @@ function computeDashboard_(data) {
   };
 
   // ---------- Overview ----------
-  var savedCases = cases.filter(function (c) { return c.savings; });
+  var teamNego = summarizeSavings_(cases);
+  teamNego.closedCases = cases.filter(function (c) { return c.hasClosedActivity; }).length;
   var overview = {
     totalCases: cases.length,
     openCases: openCases.length,
@@ -231,11 +263,11 @@ function computeDashboard_(data) {
     avgCaseAge: avg_(openCases.map(function (c) { return c.ageDays; })),
     avgFirstResponseDays: avg_(cases.map(function (c) { return c.firstResponseDays; })),
     avgScore: aiSummary.avgScore,
-    savingsTotal: round2_(savedCases.reduce(function (s, c) { return s + c.savings.saving; }, 0)),
-    savingsInitialTotal: round2_(savedCases.reduce(function (s, c) { return s + c.savings.initial * c.savings.quantity; }, 0)),
-    savingsCases: savedCases.length
+    savingsTotal: teamNego.saving,
+    savingsInitialTotal: teamNego.initial,
+    savingsCases: teamNego.cases,
+    savingsPct: teamNego.pct
   };
-  overview.savingsPct = overview.savingsInitialTotal ? round2_(overview.savingsTotal / overview.savingsInitialTotal * 100) : null;
 
   var funnel = [0, 1, 2, 3].map(function (s) {
     return { stage: s, label: STAGE_LABEL[s], count: openCases.filter(function (c) { return c.stage === s; }).length };
@@ -253,6 +285,7 @@ function computeDashboard_(data) {
       byActivityType: countBy_(acts, function (a) { return a.type; }),
       byChannel: countBy_(acts, function (a) { return a.channel; })
     },
+    nego: teamNego,
     funnel: funnel,
     weekly: weekly,
     buyers: buyers,

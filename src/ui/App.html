@@ -119,6 +119,7 @@
       '<div class="card"><h3>ขั้นตอนของ Case ที่เปิดอยู่</h3><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>' +
       '<div class="card"><h3>Budget Type</h3><div class="chart-box"><canvas id="chBudget"></canvas></div></div>' +
       '<div class="card"><h3>ช่องทางที่ใช้ติดต่อ</h3><div class="chart-box"><canvas id="chChannel"></canvas></div></div>' +
+      '<div class="card clickable" data-goto="buyers"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoOverview"></canvas></div></div>' +
       '</div>';
 
     h += '<h2>Next action ที่เลยกำหนด</h2>' + nextActionTable(D.nextActions.overdue, 'ไม่มีรายการเลยกำหนด 🎉');
@@ -128,6 +129,7 @@
     hbar('chBuyer', D.breakdown.byBuyer, nameOf);
     hbar('chDept', D.breakdown.byDept, function (c) { return c + ' · ' + label('DEPARTMENT', c); });
     hbar('chChannel', D.breakdown.byChannel);
+    renderNegoChart('chNegoOverview');
     var be = sortedEntries(D.breakdown.byBudget);
     var palette = [cssVar('--accent'), cssVar('--good'), cssVar('--warn'), cssVar('--bad'), cssVar('--muted')];
     chart('chBudget', { type: 'doughnut', data: { labels: be.map(function (x) { return x[0]; }),
@@ -153,6 +155,72 @@
   }
 
   // ---------------- buyers ----------------
+  // ---------- ผลการต่อรองราคา ----------
+  function pctTxt(v) { return v == null ? '–' : fmt(v, 2) + '%'; }
+  function vsEstTxt(v) {
+    if (v == null) return '<span class="muted">–</span>';
+    return '<span style="color:var(--' + (v <= 0 ? 'good' : 'bad') + ')">' + (v > 0 ? '+' : '') + fmt(v, 2) + '%</span>';
+  }
+  function negoRow(name, n, closed, attrs, bold) {
+    var b = bold ? ['<b>', '</b>'] : ['', ''];
+    return '<tr' + (attrs || '') + '><td>' + b[0] + esc(name) + b[1] + '</td>' +
+      '<td class="num">' + fmt(n.cases) + '<div class="small muted">สรุปผลแล้ว ' + fmt(closed) + '</div></td>' +
+      '<td class="num">' + baht(n.initial) + '</td>' +
+      '<td class="num">' + b[0] + baht(n.saving) + b[1] + '</td>' +
+      '<td class="num">' + b[0] + pctTxt(n.pct) + b[1] + '</td>' +
+      '<td class="num">' + pctTxt(n.avgPct) + '</td>' +
+      '<td class="num">' + (n.cases ? pctTxt(n.minPct) + ' – ' + pctTxt(n.maxPct) : '–') + '</td>' +
+      '<td class="num">' + vsEstTxt(n.vsEstimatePct) + '</td></tr>';
+  }
+  function negoSection() {
+    var list = D.buyers.filter(function (b) { return b.nego && (b.nego.cases || b.closedCases); })
+      .sort(function (a, b) { return b.nego.saving - a.nego.saving; });
+    var h = '<h2>ผลการต่อรองราคารายคน</h2><div class="grid cols-2"><div class="card table-wrap"><table><thead><tr>' +
+      '<th>Buyer</th><th class="num" title="Case ที่ AI ดึงราคาก่อน/หลังต่อรองได้ (รวม Case ที่ยังต่อรองอยู่)">Case ที่มีตัวเลข</th><th class="num">ราคาตั้งต้นรวม</th>' +
+      '<th class="num">ต่อรองได้ (บาท)</th><th class="num" title="ถ่วงน้ำหนักด้วยยอดเงิน">% ลดลง</th><th class="num">% เฉลี่ยต่อ Case</th>' +
+      '<th class="num">ต่ำสุด–สูงสุด</th><th class="num" title="ราคาสุดท้ายเทียบราคาประมาณการ (ติดลบ = ต่ำกว่างบ)">เทียบราคาประมาณการ</th></tr></thead><tbody>' +
+      (list.length ? list.map(function (b) {
+        return negoRow(b.name, b.nego, b.closedCases, ' class="clickable" data-nego-buyer="' + esc(b.email) + '"');
+      }).join('') : '<tr><td colspan="8" class="muted">ยังไม่มีตัวเลขการต่อรอง (รอ AI ตรวจ)</td></tr>') +
+      (D.nego ? negoRow('รวมทั้งทีม', D.nego, D.nego.closedCases, ' style="background:var(--surface-2)"', true) : '') +
+      '</tbody></table><p class="small muted">คลิกที่ชื่อเพื่อดูราย Case · % ลดลง = ยอดที่ต่อรองได้ ÷ ราคาตั้งต้นรวม (งานยอดใหญ่มีน้ำหนักมากกว่า) · ' +
+      'ตัวเลขดึงจากข้อความด้วย AI นับเฉพาะ Case ที่มีทั้งราคาก่อนและหลังต่อรอง ถ้าตัวเลขไม่ถูก ให้กด "ตรวจทั้ง Case ใหม่" หรือแก้ข้อความใน DB</p></div>' +
+      '<div class="card"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoBuyer"></canvas></div></div></div>' +
+      '<div id="negoDetail"></div>';
+    return h;
+  }
+  function negoCaseTable(email) {
+    var b = D.buyers.filter(function (x) { return x.email === email; })[0];
+    var list = D.cases.filter(function (c) { return c.buyer === email && c.savings; })
+      .sort(function (a, b) { return b.savings.saving - a.savings.saving; });
+    var missing = D.cases.filter(function (c) { return c.buyer === email && c.hasClosedActivity && !c.savings; });
+    var h = '<h2>รายการต่อรองของ ' + esc(b ? b.name : email) + '</h2><div class="card table-wrap"><table><thead><tr>' +
+      '<th>Case</th><th>เรื่อง</th><th>Vendor</th><th class="num">ราคาตั้งต้น</th><th class="num">ราคาสุดท้าย</th>' +
+      '<th class="num">ลดได้ (บาท)</th><th class="num">% ลดลง</th><th class="num">เทียบประมาณการ</th><th>ที่มา</th></tr></thead><tbody>' +
+      (list.length ? list.map(function (c) {
+        var s = c.savings;
+        return '<tr class="clickable" data-case="' + esc(c.id) + '"><td>' + esc(c.id) + '</td><td class="small">' + esc(c.ref) + '</td>' +
+          '<td class="small">' + esc(s.vendor || '–') + '</td>' +
+          '<td class="num">' + baht(s.initial) + (s.quantity > 1 ? '<div class="small muted">× ' + fmt(s.quantity) + '</div>' : '') + '</td>' +
+          '<td class="num">' + baht(s.final) + '</td><td class="num"><b>' + baht(s.saving) + '</b></td><td class="num">' + pctTxt(s.pct) + '</td>' +
+          '<td class="num">' + vsEstTxt(s.vsEstimatePct) + '</td>' +
+          '<td class="small muted">' + (s.source === 'case' ? 'AI ทั้ง Case' : 'AI ราย Activity') + '</td></tr>';
+      }).join('') : '<tr><td colspan="9" class="muted">ยังไม่มีตัวเลข</td></tr>') + '</tbody></table>' +
+      (missing.length ? '<p class="small muted">สรุปผลแล้วแต่ยังไม่มีตัวเลขราคา: ' + missing.map(function (c) {
+        return '<a href="#" data-case="' + esc(c.id) + '">' + esc(c.id) + '</a>'; }).join(', ') + '</p>' : '') + '</div>';
+    return h;
+  }
+  function renderNegoChart(id) {
+    var list = D.buyers.filter(function (b) { return b.nego && b.nego.cases; })
+      .sort(function (a, b) { return b.nego.saving - a.nego.saving; });
+    chart(id, { type: 'bar', data: { labels: list.map(function (b) { return b.name; }),
+      datasets: [{ data: list.map(function (b) { return b.nego.saving; }), backgroundColor: cssVar('--good'), borderRadius: 4 }] },
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: function (ctx) { var n = list[ctx.dataIndex].nego;
+          return baht(n.saving) + ' · ลด ' + pctTxt(n.pct) + ' · ' + n.cases + ' Case'; } } } },
+        scales: { x: { ticks: { callback: function (v) { return fmt(v); } } } } } });
+  }
+
   function renderBuyers() {
     var rows = D.buyers.map(function (b) {
       return '<tr class="clickable" data-buyer="' + esc(b.email) + '"><td><b>' + esc(b.name) + '</b><div class="small muted">' + esc(b.email) + '</div></td>' +
@@ -163,13 +231,24 @@
         '<td class="num">' + (b.avgScore == null ? '–' : '<span class="badge ' + scoreClass(b.avgScore) + '">' + fmt(b.avgScore, 1) + '</span>') + '</td>' +
         '<td class="num">' + fmt(b.lowScore) + ' / ' + fmt(b.reviewed) + '</td>' +
         '<td class="num">' + (b.avgFirstResponseDays == null ? '–' : fmt(b.avgFirstResponseDays, 1)) + '</td>' +
-        '<td class="num">' + baht(b.savings) + '</td>' +
+        '<td class="num">' + baht(b.savings) + (b.nego && b.nego.pct != null ? '<div class="small muted">' + fmt(b.nego.pct, 2) + '%</div>' : '') + '</td>' +
         '<td class="small">' + sortedEntries(b.channels).map(function (x) { return esc(x[0]) + ' ' + x[1]; }).join(', ') + '</td></tr>';
     }).join('');
     $('tab-buyers').innerHTML = '<div class="card table-wrap"><table><thead><tr><th>Buyer</th><th class="num">Case เปิด</th><th class="num">นิ่ง</th>' +
       '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
-      '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings</th><th>ช่องทาง</th></tr></thead><tbody>' +
+      '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings (%)</th><th>ช่องทาง</th></tr></thead><tbody>' +
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
+    $('tab-buyers').innerHTML = negoSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
+    renderNegoChart('chNegoBuyer');
+    $('tab-buyers').querySelectorAll('[data-nego-buyer]').forEach(function (tr) {
+      tr.addEventListener('click', function () {
+        var box = $('negoDetail');
+        var email = tr.dataset.negoBuyer;
+        if (box.dataset.buyer === email) { box.innerHTML = ''; box.dataset.buyer = ''; return; }
+        box.dataset.buyer = email;
+        box.innerHTML = negoCaseTable(email);
+      });
+    });
     $('tab-buyers').querySelectorAll('[data-buyer]').forEach(function (tr) {
       tr.addEventListener('click', function () { caseFilter.buyer = tr.dataset.buyer; caseFilter.flag = ''; renderCases(); showTab('cases'); });
     });
