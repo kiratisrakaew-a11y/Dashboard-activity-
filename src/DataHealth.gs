@@ -12,6 +12,7 @@ var HEALTH_RULES = {
   CASE_REQUIRED_BEFORE_REQUEST: { severity: 'medium', label: 'Required_Date อยู่ก่อน Request_Date' },
   CASE_INTAKE_INCOMPLETE: { severity: 'low', label: 'Intake ยังไม่ครบ (Intake_Complete = FALSE)' },
   CASE_NO_BUYER: { severity: 'high', label: 'Case ไม่มี Buyer_Owner' },
+  CASE_NO_PRICE: { severity: 'medium', label: 'ต่อรอง/สรุปผลแล้ว แต่ไม่ระบุราคาเริ่มต้นหรือราคาสุดท้าย — วัดผลการต่อรองไม่ได้' },
   CASE_AI_INCONSISTENT: { severity: 'medium', label: 'AI พบข้อมูลขัดกันระหว่าง Activity ใน Case' },
   CASE_FEW_QUOTES: { severity: 'medium', label: 'จัดซื้อปกติ (NORMAL) สรุปผลแล้วแต่เทียบราคาน้อยกว่าเกณฑ์' },
   ACT_NO_CHANNEL: { severity: 'low', label: 'Activity ไม่ระบุ Channel' },
@@ -50,6 +51,9 @@ function checkDataHealth_(data, dash) {
     if (rq !== null && rd !== null && rd < rq) add('CASE_REQUIRED_BEFORE_REQUEST', 'Cases', c._row, c.Case_ID, c.Case_ID, dayStr_(rd) + ' < ' + dayStr_(rq));
     if (c.Intake_Complete === false && c.Status === 'OPEN') add('CASE_INTAKE_INCOMPLETE', 'Cases', c._row, c.Case_ID, c.Case_ID, c.Intake_Note || '');
     if (isBlank_(c.Buyer_Owner)) add('CASE_NO_BUYER', 'Cases', c._row, c.Case_ID, c.Case_ID);
+    if (d && d.priceGap && d.priceGap.code !== 'NOT_REVIEWED') {
+      add('CASE_NO_PRICE', 'Cases', c._row, c.Case_ID, c.Case_ID, d.priceGap.label + ' (ขั้น: ' + d.stageLabel + ')');
+    }
     if (d && d.caseReview && d.caseReview.inconsistencies.length) {
       add('CASE_AI_INCONSISTENT', 'Cases', c._row, c.Case_ID, c.Case_ID, d.caseReview.inconsistencies.join(' / '));
     }

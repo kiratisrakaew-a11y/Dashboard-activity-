@@ -30,6 +30,41 @@ function computeSavingsFrom_(x) {
   };
 }
 
+/** สาเหตุที่วัดผลการต่อรองของ Case ไม่ได้ */
+var PRICE_GAP_LABEL = {
+  NO_BOTH: 'ไม่ระบุทั้งราคาเริ่มต้นและราคาสุดท้าย',
+  NO_INITIAL: 'ไม่ระบุราคาเริ่มต้น (ราคาเสนอครั้งแรก)',
+  NO_FINAL: 'ไม่ระบุราคาสุดท้าย (ราคาที่ต่อรองได้/ราคาปิด)',
+  SPLIT: 'มีราคาแต่อยู่คนละ Activity — รอ AI ตรวจทั้ง Case',
+  INVALID: 'ราคาสุดท้ายสูงกว่าราคาเริ่มต้น หรือตัวเลขไม่สอดคล้อง',
+  NOT_REVIEWED: 'AI ยังไม่ได้ตรวจ'
+};
+
+/**
+ * หาสาเหตุที่ Case (ที่ต่อรอง/สรุปผลแล้ว) วัดผลการต่อรองไม่ได้
+ *   caseSavings : savings จาก AI ตรวจทั้ง Case (หรือ null)
+ *   actExtracts : extracted จาก AI ราย Activity ของ Case นี้
+ */
+function priceGapReason_(caseSavings, actExtracts) {
+  function has(v) { return Number(v) > 0; }
+  if (caseSavings) {
+    var i = has(caseSavings.initial_price), f = has(caseSavings.final_price);
+    if (!i && !f) return 'NO_BOTH';
+    if (!i) return 'NO_INITIAL';
+    if (!f) return 'NO_FINAL';
+    return 'INVALID';
+  }
+  var xs = (actExtracts || []).filter(function (x) { return x; });
+  if (!xs.length) return 'NOT_REVIEWED';
+  var anyI = xs.some(function (x) { return has(x.initial_price); });
+  var anyF = xs.some(function (x) { return has(x.final_price); });
+  if (!anyI && !anyF) return 'NO_BOTH';
+  if (!anyI) return 'NO_INITIAL';
+  if (!anyF) return 'NO_FINAL';
+  var same = xs.some(function (x) { return has(x.initial_price) && has(x.final_price); });
+  return same ? 'INVALID' : 'SPLIT';
+}
+
 /**
  * สรุปผลการต่อรองจากหลาย Case (ใช้ทั้งรายคนและทั้งทีม)
  *   pct    = % ลดลงแบบถ่วงน้ำหนักด้วยยอดเงิน (ตัวเลขหลัก)
@@ -51,6 +86,8 @@ function summarizeSavings_(cases) {
     initial: round2_(initial),
     saving: round2_(saving),
     pct: initial ? round2_(saving / initial * 100) : null,
+    unmeasured: (cases || []).filter(function (c) { return c.priceGap && c.priceGap.code !== 'NOT_REVIEWED'; }).length,
+    notReviewed: (cases || []).filter(function (c) { return c.priceGap && c.priceGap.code === 'NOT_REVIEWED'; }).length,
     avgPct: pcts.length ? round2_(pcts.reduce(function (a, b) { return a + b; }, 0) / pcts.length) : null,
     minPct: pcts.length ? Math.min.apply(null, pcts) : null,
     maxPct: pcts.length ? Math.max.apply(null, pcts) : null,
@@ -134,6 +171,12 @@ function computeDashboard_(data) {
         .some(function (a) { sav = computeSavings_(reviews[a.id]); return !!sav; });
       if (sav) { sav.source = 'activity'; sav.vendor = ''; }
     }
+    // Case ที่ต่อรอง/สรุปผลแล้ว (ขั้น NEGOTIATION ขึ้นไป) แต่วัดผลไม่ได้
+    var priceGap = null;
+    if (!sav && stage >= 2) {
+      var code = priceGapReason_(cr ? cr.savings : null, list.map(function (a) { var r = reviews[a.id]; return r ? r.extracted : null; }));
+      priceGap = { code: code, label: PRICE_GAP_LABEL[code] };
+    }
     var scores = list.map(function (a) { return a.score; });
     return {
       id: c.Case_ID, row: c._row, ref: c.Request_Ref || '', requester: c.Requester_Name || '',
@@ -152,6 +195,7 @@ function computeDashboard_(data) {
       stale: open && (lastDay === null ? (reqDay !== null && today - reqDay > cfg.STALE_DAYS) : today - lastDay > cfg.STALE_DAYS),
       avgScore: avg_(scores),
       savings: sav,
+      priceGap: priceGap,
       caseReview: cr ? {
         score: cr.score, grade: cr.grade, summary: cr.summary, criteria: cr.criteria,
         missing: cr.missing_steps || [], inconsistencies: cr.inconsistencies || [],

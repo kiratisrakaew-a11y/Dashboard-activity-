@@ -120,3 +120,44 @@ test('computeDashboard_: ผลการต่อรองรายคน แล
   assert.equal(dash.overview.savingsPct, 10);
   assert.equal(dash.overview.savingsTotal, 20000);
 });
+
+test('priceGapReason_ บอกสาเหตุที่วัดผลการต่อรองไม่ได้', () => {
+  const P = (i, f) => ({ initial_price: i, final_price: f });
+  // จาก AI ตรวจทั้ง Case
+  assert.equal(G.priceGapReason_(P(null, null), []), 'NO_BOTH');
+  assert.equal(G.priceGapReason_(P(null, 900), []), 'NO_INITIAL');
+  assert.equal(G.priceGapReason_(P(1000, null), []), 'NO_FINAL');
+  assert.equal(G.priceGapReason_(P(1000, 1200), []), 'INVALID');
+  // จาก AI ราย Activity
+  assert.equal(G.priceGapReason_(null, []), 'NOT_REVIEWED');
+  assert.equal(G.priceGapReason_(null, [null, null]), 'NOT_REVIEWED');
+  assert.equal(G.priceGapReason_(null, [P(null, null)]), 'NO_BOTH');
+  assert.equal(G.priceGapReason_(null, [P(1000, null), P(null, null)]), 'NO_FINAL');
+  assert.equal(G.priceGapReason_(null, [P(1000, null), P(null, 900)]), 'SPLIT');
+});
+
+test('Case ที่ต่อรองแล้วแต่ไม่มีราคา → priceGap, นับรายคน และขึ้น Data Health', () => {
+  const d = fixtures(G);
+  // C2 ของ buyer b: เพิ่ม NEGOTIATION ที่ไม่มีตัวเลข และ AI ตรวจแล้วไม่พบราคาเริ่มต้น
+  d.activities.push({ _row: 6, Activity_ID: 'A5', Case_ID: 'C2', Vendor_ID: 'V1', Activity_Date: '2026-10-07T06:00:00.000Z',
+    Activity_Type: 'NEGOTIATION', Channel: 'LINE', Activity_Description: 'ต่อรองแล้ว ได้ราคา 50,000 บาท', Performed_By: 'b@x.co',
+    Next_Action: '', Next_Action_Date: '', Next_Action_Done: false, Version: 1 });
+  d.reviews.A5 = { score: 60, grade: 'C', criteria: [],
+    extracted: { initial_price: null, final_price: 50000, estimate_price: null, quantity: null, price_basis: 'total' } };
+  const dash = G.computeDashboard_(d);
+  const c2 = dash.cases.find(c => c.id === 'C2');
+  assert.equal(c2.priceGap.code, 'NO_INITIAL');
+  assert.equal(dash.cases.find(c => c.id === 'C1').priceGap, null);   // มีตัวเลขครบ
+  assert.equal(dash.cases.find(c => c.id === 'C3').priceGap, null);   // ยังไม่ถึงขั้นต่อรอง
+  assert.equal(dash.buyers.find(b => b.email === 'b@x.co').nego.unmeasured, 1);
+  assert.equal(dash.nego.unmeasured, 1);
+  const h = G.checkDataHealth_(d, dash);
+  assert.ok(h.issues.some(i => i.code === 'CASE_NO_PRICE' && i.caseId === 'C2' && /ราคาเริ่มต้น/.test(i.detail)));
+  // ยังไม่ถูกตรวจ → นับเป็นรอ AI ไม่ขึ้น Data Health
+  delete d.reviews.A5;
+  const dash2 = G.computeDashboard_(d);
+  assert.equal(dash2.cases.find(c => c.id === 'C2').priceGap.code, 'NOT_REVIEWED');
+  assert.equal(dash2.nego.notReviewed, 1);
+  assert.equal(dash2.nego.unmeasured, 0);
+  assert.ok(!G.checkDataHealth_(d, dash2).issues.some(i => i.code === 'CASE_NO_PRICE'));
+});
