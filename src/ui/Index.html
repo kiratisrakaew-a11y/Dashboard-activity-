@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet">
+  <?!= include_('ui/Styles'); ?>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◧</span>
+      <div>
+        <div class="title">Procurement Activity Dashboard</div>
+        <div class="sub" id="subtitle">กำลังโหลด…</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="who"><?= userName ?></span>
+      <button class="btn ghost" id="btnRefresh" title="อ่านข้อมูลจาก DB ใหม่">↻ รีเฟรช</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="active">ภาพรวม</button>
+    <button data-tab="buyers">Buyer</button>
+    <button data-tab="cases">Cases</button>
+    <button data-tab="ai">AI ตรวจการเขียน</button>
+    <button data-tab="health">Data Health <span class="pill" id="healthPill"></span></button>
+    <button data-tab="settings">ตั้งค่า</button>
+  </nav>
+
+  <main>
+    <div id="loading" class="loading"><div class="spinner"></div>กำลังอ่านข้อมูล (อ่านอย่างเดียว)…</div>
+    <div id="error" class="error hidden"></div>
+
+    <section id="tab-overview" class="tab"></section>
+    <section id="tab-buyers" class="tab hidden"></section>
+    <section id="tab-cases" class="tab hidden"></section>
+    <section id="tab-ai" class="tab hidden"></section>
+    <section id="tab-health" class="tab hidden"></section>
+    <section id="tab-settings" class="tab hidden"></section>
+  </main>
+
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <div id="drawerTitle"></div>
+      <button class="btn ghost" id="drawerClose">✕</button>
+    </div>
+    <div id="drawerBody" class="drawer-body"></div>
+  </aside>
+  <div id="scrim" class="scrim hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <?!= include_('ui/App'); ?>
+</body>
+</html>

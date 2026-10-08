@@ -1,0 +1,441 @@
+<script>
+(function () {
+  'use strict';
+  var D = null;               // dashboard payload
+  var charts = {};
+  var caseFilter = { buyer: '', dept: '', status: 'OPEN', flag: '', q: '' };
+
+  // ---------------- helpers ----------------
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function fmt(n, d) {
+    if (n === null || n === undefined || n === '' || isNaN(n)) return '–';
+    return Number(n).toLocaleString('th-TH', { maximumFractionDigits: d === undefined ? 0 : d });
+  }
+  function baht(n) { return n == null ? '–' : '฿' + fmt(n); }
+  function nameOf(email) {
+    var b = (D.buyers || []).filter(function (x) { return x.email === email; })[0];
+    return b ? b.name : (email ? String(email).split('@')[0] : '–');
+  }
+  function label(list, code) {
+    var l = D.lists && D.lists[list];
+    return l && l[code] ? l[code] : code;
+  }
+  function gradeBadge(score, grade, stale) {
+    if (score === null || score === undefined) return '<span class="badge">ยังไม่ตรวจ</span>';
+    return '<span class="badge grade-' + esc(grade) + '" title="' + (stale ? 'เนื้อหา/เกณฑ์เปลี่ยน รอตรวจใหม่' : '') + '">' +
+      esc(grade) + ' · ' + fmt(score) + (stale ? ' *' : '') + '</span>';
+  }
+  function scoreClass(s) {
+    if (s == null) return '';
+    return s >= 70 ? 'good' : s >= D.settings.SCORE_THRESHOLD ? 'warn' : 'bad';
+  }
+  function sheetLink(sheet, row, text) {
+    var gid = D.meta.gids[sheet];
+    var url = D.meta.url + '#gid=' + gid + (row ? '&range=A' + row : '');
+    return '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(text || ('แถว ' + row)) + '</a>';
+  }
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.classList.remove('hidden');
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.classList.add('hidden'); }, 3500);
+  }
+  function call(fn, args) {
+    return new Promise(function (resolve, reject) {
+      var r = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+      r[fn].apply(r, args || []);
+    });
+  }
+  function kpi(lbl, value, hint, cls, onClickTab) {
+    return '<div class="card kpi ' + (cls || '') + (onClickTab ? ' clickable" data-goto="' + onClickTab : '') + '">' +
+      '<div class="label">' + esc(lbl) + '</div><div class="value">' + value + '</div>' +
+      (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div>';
+  }
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function chart(id, cfg) {
+    if (charts[id]) charts[id].destroy();
+    var el = $(id); if (!el || !window.Chart) return;
+    Chart.defaults.color = cssVar('--muted');
+    Chart.defaults.borderColor = cssVar('--border');
+    Chart.defaults.font.family = "'IBM Plex Sans Thai', system-ui, sans-serif";
+    charts[id] = new Chart(el, cfg);
+  }
+  function sortedEntries(obj) {
+    return Object.keys(obj || {}).map(function (k) { return [k, obj[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+  }
+  function hbar(id, obj, labeler) {
+    var e = sortedEntries(obj);
+    chart(id, { type: 'bar', data: { labels: e.map(function (x) { return labeler ? labeler(x[0]) : x[0]; }),
+      datasets: [{ data: e.map(function (x) { return x[1]; }), backgroundColor: cssVar('--accent'), borderRadius: 4 }] },
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false } },
+        scales: { x: { ticks: { precision: 0 } } } } });
+  }
+
+  // ---------------- tabs ----------------
+  function showTab(name) {
+    document.querySelectorAll('#tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === name); });
+    document.querySelectorAll('.tab').forEach(function (s) { s.classList.toggle('hidden', s.id !== 'tab-' + name); });
+    try { localStorage.setItem('dash.tab', name); } catch (e) {}
+  }
+  $('tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (b) showTab(b.dataset.tab);
+  });
+  document.addEventListener('click', function (e) {
+    var g = e.target.closest('[data-goto]');
+    if (g) {
+      var parts = g.dataset.goto.split(':');
+      if (parts[1] !== undefined) { caseFilter.flag = parts[1]; caseFilter.status = parts[2] || 'OPEN'; renderCases(); }
+      showTab(parts[0]);
+    }
+    var c = e.target.closest('[data-case]');
+    if (c) { if (c.tagName === 'A') e.preventDefault(); openCase(c.dataset.case); }
+    var rv = e.target.closest('[data-review]');
+    if (rv) reviewNow(rv.dataset.review, rv);
+  });
+
+  // ---------------- overview ----------------
+  function renderOverview() {
+    var o = D.overview, ai = D.ai;
+    var h = '<div class="grid kpis">' +
+      kpi('Case เปิดอยู่', fmt(o.openCases), 'ทั้งหมด ' + fmt(o.totalCases) + ' · ใหม่ 7 วัน ' + fmt(o.newCases7d), '', 'cases::OPEN') +
+      kpi('Next action เลยกำหนด', fmt(o.overdueNextActions), 'ลืมติ๊ก Done ' + fmt(o.forgotDone) + ' · ครบกำหนดวันนี้/พรุ่งนี้ ' + fmt(o.dueSoon), o.overdueNextActions ? 'bad' : 'good') +
+      kpi('Case นิ่ง > ' + D.settings.STALE_DAYS + ' วัน', fmt(o.staleCases), 'ไม่มี Activity เลย ' + fmt(o.noActivityCases), o.staleCases ? 'warn' : 'good', 'cases:stale:OPEN') +
+      kpi('สรุปผลแล้วแต่ยัง OPEN', fmt(o.closedButOpen), 'รอปิด Case / ออก PR', o.closedButOpen ? 'warn' : '', 'cases:closedButOpen:OPEN') +
+      kpi('เลย Required Date', fmt(o.pastRequired), 'อายุ Case เฉลี่ย ' + fmt(o.avgCaseAge, 1) + ' วัน', o.pastRequired ? 'bad' : '', 'cases:pastRequired:OPEN') +
+      kpi('คะแนนการเขียน (AI)', o.avgScore == null ? '–' : fmt(o.avgScore, 1), 'ตรวจแล้ว ' + fmt(ai.reviewed) + ' · รอ ' + fmt(ai.pending), scoreClass(o.avgScore), 'ai') +
+      kpi('Savings ที่ต่อรองได้', baht(o.savingsTotal), o.savingsPct == null ? 'ยังไม่มีข้อมูลราคา' : fmt(o.savingsPct, 2) + '% จาก ' + fmt(o.savingsCases) + ' Case', 'good') +
+      kpi('รับงานถึง Activity แรก', o.avgFirstResponseDays == null ? '–' : fmt(o.avgFirstResponseDays, 1) + ' วัน', 'ค่าเฉลี่ยทุก Case') +
+      '</div>';
+
+    h += '<div class="grid cols-2" style="margin-top:12px">' +
+      '<div class="card"><h3>Case เปิดอยู่ตาม Buyer</h3><div class="chart-box"><canvas id="chBuyer"></canvas></div></div>' +
+      '<div class="card"><h3>แนวโน้มรายสัปดาห์</h3><div class="chart-box"><canvas id="chWeekly"></canvas></div></div>' +
+      '<div class="card"><h3>Case เปิดอยู่ตามแผนก</h3><div class="chart-box"><canvas id="chDept"></canvas></div></div>' +
+      '<div class="card"><h3>ขั้นตอนของ Case ที่เปิดอยู่</h3><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>' +
+      '<div class="card"><h3>Budget Type</h3><div class="chart-box"><canvas id="chBudget"></canvas></div></div>' +
+      '<div class="card"><h3>ช่องทางที่ใช้ติดต่อ</h3><div class="chart-box"><canvas id="chChannel"></canvas></div></div>' +
+      '</div>';
+
+    h += '<h2>Next action ที่เลยกำหนด</h2>' + nextActionTable(D.nextActions.overdue, 'ไม่มีรายการเลยกำหนด 🎉');
+    h += '<h2>ครบกำหนดวันนี้ / พรุ่งนี้</h2>' + nextActionTable(D.nextActions.dueSoon, 'ไม่มี');
+    $('tab-overview').innerHTML = h;
+
+    hbar('chBuyer', D.breakdown.byBuyer, nameOf);
+    hbar('chDept', D.breakdown.byDept, function (c) { return c + ' · ' + label('DEPARTMENT', c); });
+    hbar('chChannel', D.breakdown.byChannel);
+    var be = sortedEntries(D.breakdown.byBudget);
+    var palette = [cssVar('--accent'), cssVar('--good'), cssVar('--warn'), cssVar('--bad'), cssVar('--muted')];
+    chart('chBudget', { type: 'doughnut', data: { labels: be.map(function (x) { return x[0]; }),
+      datasets: [{ data: be.map(function (x) { return x[1]; }), backgroundColor: palette, borderColor: cssVar('--surface') }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { position: 'right' } } } });
+    chart('chFunnel', { type: 'bar', data: { labels: D.funnel.map(function (f) { return f.label; }),
+      datasets: [{ data: D.funnel.map(function (f) { return f.count; }), backgroundColor: cssVar('--accent'), borderRadius: 4 }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { ticks: { precision: 0 } } } } });
+    chart('chWeekly', { type: 'bar', data: { labels: D.weekly.map(function (w) { return w.week; }), datasets: [
+      { label: 'Activity', data: D.weekly.map(function (w) { return w.activities; }), backgroundColor: cssVar('--accent'), borderRadius: 4, yAxisID: 'y' },
+      { label: 'Case ใหม่', data: D.weekly.map(function (w) { return w.newCases; }), backgroundColor: cssVar('--muted'), borderRadius: 4, yAxisID: 'y' },
+      { label: 'คะแนน AI', type: 'line', data: D.weekly.map(function (w) { return w.avgScore; }), borderColor: cssVar('--good'), backgroundColor: cssVar('--good'), yAxisID: 'y2', spanGaps: true }
+    ] }, options: { maintainAspectRatio: false, scales: { y: { ticks: { precision: 0 } }, y2: { position: 'right', min: 0, max: 100, grid: { display: false } } } } });
+  }
+
+  function nextActionTable(list, empty) {
+    if (!list.length) return '<div class="card muted">' + empty + '</div>';
+    return '<div class="card table-wrap"><table><thead><tr><th>Case</th><th>Activity</th><th>Next action</th><th>กำหนด</th><th class="num">เลย (วัน)</th><th>Buyer</th></tr></thead><tbody>' +
+      list.map(function (o) {
+        return '<tr class="clickable" data-case="' + esc(o.caseId) + '"><td>' + esc(o.caseId) + '</td><td>' + esc(o.id) + '</td><td>' + esc(o.nextAction) +
+          '</td><td>' + esc(o.nextDate) + '</td><td class="num">' + (o.daysLate > 0 ? fmt(o.daysLate) : '–') + '</td><td>' + esc(nameOf(o.by)) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  // ---------------- buyers ----------------
+  function renderBuyers() {
+    var rows = D.buyers.map(function (b) {
+      return '<tr class="clickable" data-buyer="' + esc(b.email) + '"><td><b>' + esc(b.name) + '</b><div class="small muted">' + esc(b.email) + '</div></td>' +
+        '<td class="num">' + fmt(b.openCases) + '</td><td class="num">' + fmt(b.staleCases) + '</td>' +
+        '<td class="num">' + fmt(b.activities7d) + '</td><td class="num">' + fmt(b.activitiesTotal) + '</td>' +
+        '<td class="num">' + (b.overdue ? '<span class="badge bad">' + b.overdue + '</span>' : '0') + '</td>' +
+        '<td class="num">' + fmt(b.forgotDone) + '</td>' +
+        '<td class="num">' + (b.avgScore == null ? '–' : '<span class="badge ' + scoreClass(b.avgScore) + '">' + fmt(b.avgScore, 1) + '</span>') + '</td>' +
+        '<td class="num">' + fmt(b.lowScore) + ' / ' + fmt(b.reviewed) + '</td>' +
+        '<td class="num">' + (b.avgFirstResponseDays == null ? '–' : fmt(b.avgFirstResponseDays, 1)) + '</td>' +
+        '<td class="num">' + baht(b.savings) + '</td>' +
+        '<td class="small">' + sortedEntries(b.channels).map(function (x) { return esc(x[0]) + ' ' + x[1]; }).join(', ') + '</td></tr>';
+    }).join('');
+    $('tab-buyers').innerHTML = '<div class="card table-wrap"><table><thead><tr><th>Buyer</th><th class="num">Case เปิด</th><th class="num">นิ่ง</th>' +
+      '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
+      '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings</th><th>ช่องทาง</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
+    $('tab-buyers').querySelectorAll('[data-buyer]').forEach(function (tr) {
+      tr.addEventListener('click', function () { caseFilter.buyer = tr.dataset.buyer; caseFilter.flag = ''; renderCases(); showTab('cases'); });
+    });
+  }
+
+  // ---------------- cases ----------------
+  var FLAGS = { '': 'ทุกรายการ', stale: 'นิ่งเกินกำหนด', pastRequired: 'เลย Required Date', noActivity: 'ยังไม่มี Activity',
+    closedButOpen: 'สรุปผลแล้วแต่ยัง OPEN', lowScore: 'คะแนน AI ต่ำ', fewQuotes: 'เทียบราคาน้อยกว่าเกณฑ์' };
+  function caseMatches(c) {
+    var f = caseFilter;
+    if (f.buyer && c.buyer !== f.buyer) return false;
+    if (f.dept && c.dept !== f.dept) return false;
+    if (f.status && c.status !== f.status) return false;
+    if (f.flag === 'stale' && !c.stale) return false;
+    if (f.flag === 'pastRequired' && !c.pastRequired) return false;
+    if (f.flag === 'noActivity' && c.activityCount) return false;
+    if (f.flag === 'closedButOpen' && !(c.hasClosedActivity && c.status === 'OPEN')) return false;
+    if (f.flag === 'lowScore' && !(c.avgScore != null && c.avgScore < D.settings.SCORE_THRESHOLD)) return false;
+    if (f.flag === 'fewQuotes' && !(c.hasClosedActivity && c.method === 'NORMAL' && c.vendorsContacted < D.settings.MIN_QUOTES)) return false;
+    if (f.q) {
+      var s = (c.id + ' ' + c.ref + ' ' + c.requester + ' ' + c.subType).toLowerCase();
+      if (s.indexOf(f.q.toLowerCase()) < 0) return false;
+    }
+    return true;
+  }
+  function opts(values, current, allLabel, labeler) {
+    return '<option value="">' + allLabel + '</option>' + values.map(function (v) {
+      return '<option value="' + esc(v) + '"' + (v === current ? ' selected' : '') + '>' + esc(labeler ? labeler(v) : v) + '</option>';
+    }).join('');
+  }
+  function renderCases() {
+    if (!D) return;
+    var depts = Object.keys(D.cases.reduce(function (m, c) { m[c.dept] = 1; return m; }, {})).sort();
+    var statuses = Object.keys(D.cases.reduce(function (m, c) { m[c.status] = 1; return m; }, {})).sort();
+    var list = D.cases.filter(caseMatches);
+    var h = '<div class="filters">' +
+      '<input type="text" id="fQ" placeholder="ค้นหา Case / เรื่อง / ผู้ขอ" value="' + esc(caseFilter.q) + '">' +
+      '<select id="fBuyer">' + opts(D.buyers.map(function (b) { return b.email; }), caseFilter.buyer, 'ทุก Buyer', nameOf) + '</select>' +
+      '<select id="fDept">' + opts(depts, caseFilter.dept, 'ทุกแผนก', function (d) { return d + ' · ' + label('DEPARTMENT', d); }) + '</select>' +
+      '<select id="fStatus">' + opts(statuses, caseFilter.status, 'ทุกสถานะ') + '</select>' +
+      '<select id="fFlag">' + Object.keys(FLAGS).map(function (k) { return '<option value="' + k + '"' + (k === caseFilter.flag ? ' selected' : '') + '>' + FLAGS[k] + '</option>'; }).join('') + '</select>' +
+      '<span class="muted small">' + list.length + ' รายการ</span></div>';
+    h += '<div class="card table-wrap"><table><thead><tr><th>Case</th><th>เรื่อง</th><th>แผนก</th><th>Buyer</th><th>ขั้นตอน</th>' +
+      '<th class="num">อายุ (วัน)</th><th class="num">Activity</th><th class="num">ล่าสุด (วันก่อน)</th><th class="num">Vendor</th>' +
+      '<th>คะแนน AI</th><th class="num">Savings</th><th>สัญญาณ</th></tr></thead><tbody>' +
+      list.map(function (c) {
+        var flags = [];
+        if (c.stale) flags.push('<span class="badge warn">นิ่ง</span>');
+        if (c.pastRequired) flags.push('<span class="badge bad">เลยกำหนด</span>');
+        if (!c.activityCount) flags.push('<span class="badge bad">ไม่มี Activity</span>');
+        if (c.hasClosedActivity && c.status === 'OPEN') flags.push('<span class="badge info">รอปิด</span>');
+        if (!c.intakeComplete) flags.push('<span class="badge">Intake ไม่ครบ</span>');
+        return '<tr class="clickable" data-case="' + esc(c.id) + '"><td>' + esc(c.id) + '<div class="small muted">' + esc(c.method) + ' · ' + esc(c.budget) + '</div></td>' +
+          '<td class="desc">' + esc(c.ref) + '<div class="small muted">' + esc(c.subType) + '</div></td><td>' + esc(c.dept) + '</td><td>' + esc(nameOf(c.buyer)) + '</td>' +
+          '<td>' + esc(c.stageLabel) + '</td><td class="num">' + fmt(c.ageDays) + '</td><td class="num">' + fmt(c.activityCount) + '</td>' +
+          '<td class="num">' + fmt(c.daysSinceLast) + '</td><td class="num">' + fmt(c.vendorsContacted) + '</td>' +
+          '<td>' + (c.avgScore == null ? '<span class="badge">–</span>' : '<span class="badge ' + scoreClass(c.avgScore) + '">' + fmt(c.avgScore, 1) + '</span>') + '</td>' +
+          '<td class="num">' + (c.savings ? baht(c.savings.saving) + '<div class="small muted">' + fmt(c.savings.pct, 2) + '%</div>' : '–') + '</td>' +
+          '<td>' + flags.join(' ') + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    $('tab-cases').innerHTML = h;
+    $('fQ').addEventListener('input', function (e) { caseFilter.q = e.target.value; clearTimeout(renderCases._t); renderCases._t = setTimeout(function () { renderCases(); var q = $('fQ'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 250); });
+    [['fBuyer', 'buyer'], ['fDept', 'dept'], ['fStatus', 'status'], ['fFlag', 'flag']].forEach(function (p) {
+      $(p[0]).addEventListener('change', function (e) { caseFilter[p[1]] = e.target.value; renderCases(); });
+    });
+  }
+
+  function reviewBlock(a) {
+    if (a.score === null || a.score === undefined) {
+      return '<div class="review muted">ยังไม่ได้ตรวจด้วย AI <button class="btn ghost" data-review="' + esc(a.id) + '">ตรวจตอนนี้</button></div>';
+    }
+    var r = '<div class="review"><div class="tl-head">' + gradeBadge(a.score, a.grade, a.reviewStale) +
+      (a.typeMismatch ? '<span class="badge warn">ประเภทไม่ตรง → ' + esc(a.suggestedType) + '</span>' : '') +
+      '<span class="small muted">' + esc(String(a.reviewedAt).slice(0, 16).replace('T', ' ')) + '</span>' +
+      '<button class="btn ghost" data-review="' + esc(a.id) + '" style="margin-left:auto">ตรวจใหม่</button></div>' +
+      '<ul class="crit">' + (a.criteria || []).map(function (c) {
+        var icon = c.result === 'yes' ? '✓' : c.result === 'partial' ? '◐' : '✗';
+        return '<li><span class="' + esc(c.result) + '">' + icon + '</span> ' + esc(c.name) + (c.comment ? ' <span class="muted small">— ' + esc(c.comment) + '</span>' : '') + '</li>';
+      }).join('') + '</ul>';
+    if (a.suggestion) r += '<div><b>คำแนะนำ:</b> ' + esc(a.suggestion) + '</div>';
+    if (a.improvedExample) r += '<div class="small muted" style="margin-top:6px">ตัวอย่างการเขียน:</div><div class="example small">' + esc(a.improvedExample) + '</div>';
+    return r + '</div>';
+  }
+
+  function openCase(id) {
+    var c = D.cases.filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    var acts = D.activities.filter(function (a) { return a.caseId === id; })
+      .sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    $('drawerTitle').textContent = c.id + ' · ' + c.ref;
+    var h = '<div class="kv">' +
+      '<div>ผู้ขอ</div><div>' + esc(c.requester) + ' (' + esc(c.dept) + ' · ' + esc(label('DEPARTMENT', c.dept)) + ')</div>' +
+      '<div>Buyer</div><div>' + esc(nameOf(c.buyer)) + '</div>' +
+      '<div>วิธี / งบ</div><div>' + esc(c.method) + ' · ' + esc(c.budget) + ' · ' + esc(c.subType) + '</div>' +
+      '<div>สถานะ</div><div>' + esc(c.status) + ' · ' + esc(c.stageLabel) + (c.prNo ? ' · PR ' + esc(c.prNo) : '') + '</div>' +
+      '<div>วันที่รับ / ต้องการ</div><div>' + esc(c.requestDate) + ' / ' + esc(c.requiredDate || '–') + '</div>' +
+      '<div>อายุ</div><div>' + fmt(c.ageDays) + ' วัน · Activity แรกหลังรับงาน ' + (c.firstResponseDays == null ? '–' : c.firstResponseDays + ' วัน') + '</div>' +
+      (c.savings ? '<div>Savings</div><div>' + baht(c.savings.initial) + ' → ' + baht(c.savings.final) + (c.savings.quantity > 1 ? ' × ' + c.savings.quantity : '') +
+        ' = <b>' + baht(c.savings.saving) + '</b> (' + fmt(c.savings.pct, 2) + '%)' +
+        (c.savings.estimate ? ' · เทียบราคาประมาณการ ' + baht(c.savings.estimate) + ' (' + (c.savings.vsEstimatePct > 0 ? '+' : '') + fmt(c.savings.vsEstimatePct, 2) + '%)' : '') + '</div>' : '') +
+      '<div>DB</div><div>' + sheetLink('Cases', c.row, 'เปิดแถวใน Sheet') + '</div></div>';
+    h += '<h2>Activity (' + acts.length + ')</h2><div class="timeline">' + (acts.length ? acts.map(function (a) {
+      return '<div class="tl-item"><div class="tl-head"><b>' + esc(a.id) + '</b><span class="badge info">' + esc(a.type) + '</span>' +
+        '<span class="badge">' + esc(a.channel || 'ไม่ระบุช่องทาง') + '</span><span class="small muted">' + esc(String(a.date).slice(0, 10)) + ' · ' + esc(nameOf(a.by)) + '</span></div>' +
+        (a.vendorName ? '<div class="small muted">Vendor: ' + esc(a.vendorName) + (a.vendorStatus ? ' (' + esc(a.vendorStatus) + ')' : '') + '</div>' : '') +
+        '<div class="desc">' + esc(a.desc) + '</div>' +
+        (a.nextAction ? '<div class="small">➜ ' + esc(a.nextAction) + (a.nextDate ? ' · ' + esc(String(a.nextDate).slice(0, 10)) : '') + (a.nextDone ? ' ✓' : '') + '</div>' : '') +
+        '<div class="small">' + sheetLink('Activities', a.row, 'เปิดใน Sheet') + '</div>' + reviewBlock(a) + '</div>';
+    }).join('') : '<div class="muted">ยังไม่มี Activity</div>') + '</div>';
+    $('drawerBody').innerHTML = h;
+    $('drawer').classList.remove('hidden'); $('scrim').classList.remove('hidden');
+  }
+  function closeDrawer() { $('drawer').classList.add('hidden'); $('scrim').classList.add('hidden'); }
+  $('drawerClose').addEventListener('click', closeDrawer);
+  $('scrim').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDrawer(); });
+
+  function reviewNow(actId, btn) {
+    btn.disabled = true; btn.textContent = 'กำลังตรวจ…';
+    call('apiReviewNow', [actId]).then(function (json) {
+      var r = JSON.parse(json);
+      var a = D.activities.filter(function (x) { return x.id === actId; })[0];
+      if (a) {
+        a.score = r.score; a.grade = r.grade; a.criteria = r.criteria; a.suggestion = r.suggestion; a.missing = r.missing;
+        a.typeMismatch = r.type_mismatch; a.suggestedType = r.suggested_type; a.reviewStale = false; a.reviewedAt = r.reviewed_at;
+        a.improvedExample = r.improved_example;
+      }
+      toast(actId + ' ได้ ' + r.grade + ' (' + r.score + ')');
+      if (a && !$('drawer').classList.contains('hidden')) openCase(a.caseId);
+    }).catch(function (e) { toast('ตรวจไม่สำเร็จ: ' + e.message); btn.disabled = false; btn.textContent = 'ลองใหม่'; });
+  }
+
+  // ---------------- AI ----------------
+  function renderAi() {
+    var ai = D.ai, th = D.settings.SCORE_THRESHOLD;
+    var reviewed = D.activities.filter(function (a) { return a.score != null; });
+    var low = reviewed.filter(function (a) { return a.score < th; }).sort(function (a, b) { return a.score - b.score; });
+    var mism = reviewed.filter(function (a) { return a.typeMismatch; });
+    var h = '<div class="grid kpis">' +
+      kpi('คะแนนเฉลี่ย', ai.avgScore == null ? '–' : fmt(ai.avgScore, 1), 'เต็ม 100', scoreClass(ai.avgScore)) +
+      kpi('ตรวจแล้ว', fmt(ai.reviewed), 'รอตรวจ ' + fmt(ai.pending) + ' รายการ') +
+      kpi('ต่ำกว่าเกณฑ์ (' + th + ')', fmt(ai.lowCount), '', ai.lowCount ? 'bad' : 'good') +
+      kpi('ประเภทไม่ตรงเนื้อหา', fmt(ai.typeMismatchCount), '', ai.typeMismatchCount ? 'warn' : 'good') +
+      '</div>';
+    h += '<div class="filters" style="margin-top:12px"><button class="btn" id="btnBatch">ตรวจรายการที่ค้างตอนนี้ (สูงสุด ' + D.settings.BATCH_SIZE + ')</button>' +
+      '<span class="small muted">Provider: <b>' + esc(D.settings.AI_PROVIDER) + '</b> · ' + esc(D.settings.AI_MODEL) + ' · ตรวจอัตโนมัติทุกชั่วโมง</span></div>';
+    h += '<div class="grid cols-2"><div class="card"><h3>คะแนนเฉลี่ยตามประเภท Activity</h3><div class="chart-box"><canvas id="chType"></canvas></div></div>' +
+      '<div class="card"><h3>เกณฑ์ที่ขาดบ่อยที่สุด</h3>' + topMissing(reviewed) + '</div></div>';
+    h += '<h2>รายการที่ควรปรับปรุง (คะแนน &lt; ' + th + ')</h2>' + actTable(low, 'ไม่มีรายการต่ำกว่าเกณฑ์');
+    h += '<h2>ประเภท Activity ไม่ตรงกับเนื้อหา</h2>' + actTable(mism, 'ไม่มี');
+    h += '<h2>ประวัติการรัน</h2><div class="card table-wrap"><table><thead><tr><th>เริ่ม</th><th>Provider</th><th class="num">ค้าง</th><th class="num">ตรวจ</th><th class="num">Error</th><th>ข้อความ</th></tr></thead><tbody>' +
+      (D.runs || []).map(function (r) {
+        return '<tr><td>' + esc(String(r.started).slice(0, 19).replace('T', ' ')) + '</td><td>' + esc(r.provider) + ' · ' + esc(r.model) + '</td><td class="num">' + fmt(r.pending) +
+          '</td><td class="num">' + fmt(r.reviewed) + '</td><td class="num">' + fmt(r.errors) + '</td><td class="small">' + esc(r.message) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+    $('tab-ai').innerHTML = h;
+    var te = Object.keys(ai.byType);
+    chart('chType', { type: 'bar', data: { labels: te, datasets: [{ data: te.map(function (k) { return ai.byType[k]; }),
+      backgroundColor: te.map(function (k) { return cssVar('--' + (scoreClass(ai.byType[k]) || 'accent')); }), borderRadius: 4 }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 } } } });
+    $('btnBatch').addEventListener('click', function (e) {
+      var b = e.target; b.disabled = true; b.textContent = 'กำลังตรวจ… (อาจใช้เวลาหลายนาที)';
+      call('apiRunBatch').then(function (json) {
+        var r = JSON.parse(json);
+        toast(r.skipped || ('ตรวจแล้ว ' + r.reviewed + ' รายการ' + (r.errors ? ', error ' + r.errors : '')));
+        load(true);
+      }).catch(function (err) { toast('ไม่สำเร็จ: ' + err.message); b.disabled = false; b.textContent = 'ลองใหม่'; });
+    });
+  }
+  function topMissing(reviewed) {
+    var count = {};
+    reviewed.forEach(function (a) { (a.criteria || []).forEach(function (c) { if (c.result !== 'yes') count[c.name] = (count[c.name] || 0) + (c.result === 'no' ? 1 : 0.5); }); });
+    var e = sortedEntries(count).slice(0, 8);
+    if (!e.length) return '<div class="muted">ยังไม่มีข้อมูล</div>';
+    var max = e[0][1];
+    return '<table><tbody>' + e.map(function (x) {
+      return '<tr><td>' + esc(x[0]) + '</td><td style="width:120px"><div class="bar"><span style="width:' + (x[1] / max * 100) + '%"></span></div></td><td class="num">' + fmt(x[1], 1) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+  }
+  function actTable(list, empty) {
+    if (!list.length) return '<div class="card muted">' + empty + '</div>';
+    return '<div class="card table-wrap"><table><thead><tr><th>Activity</th><th>Case</th><th>ประเภท</th><th>Buyer</th><th>คะแนน</th><th>ข้อความ</th><th>คำแนะนำ</th></tr></thead><tbody>' +
+      list.map(function (a) {
+        return '<tr class="clickable" data-case="' + esc(a.caseId) + '"><td>' + esc(a.id) + '</td><td>' + esc(a.caseId) + '</td><td>' + esc(a.type) +
+          (a.typeMismatch ? '<div class="small muted">→ ' + esc(a.suggestedType) + '</div>' : '') + '</td><td>' + esc(nameOf(a.by)) + '</td><td>' +
+          gradeBadge(a.score, a.grade, a.reviewStale) + '</td><td class="desc small">' + esc(a.desc.length > 160 ? a.desc.slice(0, 160) + '…' : a.desc) +
+          '</td><td class="small">' + esc(a.suggestion) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  // ---------------- data health ----------------
+  function renderHealth() {
+    var hl = D.health;
+    $('healthPill').textContent = hl.bySeverity.high || '';
+    var groups = {};
+    hl.issues.forEach(function (i) { (groups[i.code] = groups[i.code] || []).push(i); });
+    var sevCls = { high: 'bad', medium: 'warn', low: '' };
+    var sevTh = { high: 'สูง', medium: 'กลาง', low: 'ต่ำ' };
+    var h = '<p class="muted small">ระบบแสดงปัญหาให้เห็นเท่านั้น และจะไม่แก้ไข DB ให้ คลิกลิงก์เพื่อเปิดแถวนั้นใน Google Sheet แล้วแก้ไขเอง</p><div class="grid kpis">' +
+      kpi('ปัญหาระดับสูง', fmt(hl.bySeverity.high || 0), '', (hl.bySeverity.high ? 'bad' : 'good')) +
+      kpi('ระดับกลาง', fmt(hl.bySeverity.medium || 0), '', (hl.bySeverity.medium ? 'warn' : 'good')) +
+      kpi('ระดับต่ำ', fmt(hl.bySeverity.low || 0), '') + '</div>';
+    Object.keys(groups).forEach(function (code) {
+      var g = groups[code], r = hl.rules[code];
+      h += '<h2><span class="badge ' + sevCls[r.severity] + '">' + sevTh[r.severity] + '</span> ' + esc(r.label) + ' <span class="muted">(' + g.length + ')</span></h2>' +
+        '<div class="card table-wrap"><table><thead><tr><th>รายการ</th><th>Case</th><th>รายละเอียด</th><th>แก้ใน Sheet</th></tr></thead><tbody>' +
+        g.map(function (i) {
+          return '<tr><td>' + esc(i.recordId) + '</td><td>' + (i.caseId ? '<a href="#" data-case="' + esc(i.caseId) + '">' + esc(i.caseId) + '</a>' : '') +
+            '</td><td class="small">' + esc(i.detail) + '</td><td>' + sheetLink(i.sheet, i.row, i.sheet + ' แถว ' + i.row) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    });
+    if (!hl.issues.length) h += '<div class="card">ไม่พบปัญหา 🎉</div>';
+    $('tab-health').innerHTML = h;
+  }
+
+  // ---------------- settings ----------------
+  function renderSettings() {
+    var s = D.settings;
+    var prov = ['claude', 'openai', 'gemini'];
+    var h = '<div class="grid cols-2"><div class="card"><h3>AI Provider</h3>' +
+      '<div class="form-row"><label>Provider</label><select id="sProvider">' + prov.map(function (p) {
+        return '<option value="' + p + '"' + (p === s.AI_PROVIDER ? ' selected' : '') + '>' + p + (s.keys[p] ? '' : ' (ยังไม่มี API key)') + '</option>';
+      }).join('') + '</select></div>' +
+      '<div class="form-row"><label>Model</label><input type="text" id="sModel" value="' + esc(s.AI_MODEL === s.defaultModels[s.AI_PROVIDER] ? '' : s.AI_MODEL) + '" placeholder="ค่าเริ่มต้น: ' + esc(s.defaultModels[s.AI_PROVIDER]) + '"></div>' +
+      '<div class="form-row"><label>Effort (Claude)</label><select id="sEffort">' + ['low', 'medium', 'high'].map(function (e) {
+        return '<option' + (e === s.AI_EFFORT ? ' selected' : '') + '>' + e + '</option>'; }).join('') + '</select></div>' +
+      '<p class="small muted">API key ตั้งค่าใน Apps Script → Project Settings → Script Properties: ' +
+      'ANTHROPIC_API_KEY ' + (s.keys.claude ? '✓' : '✗') + ' · OPENAI_API_KEY ' + (s.keys.openai ? '✓' : '✗') + ' · GEMINI_API_KEY ' + (s.keys.gemini ? '✓' : '✗') + '</p></div>' +
+      '<div class="card"><h3>เกณฑ์ Dashboard</h3>' +
+      numRow('STALE_DAYS', 'Case นิ่งเมื่อไม่มี Activity เกิน (วัน)') + numRow('SCORE_THRESHOLD', 'เกณฑ์คะแนน AI ขั้นต่ำ') +
+      numRow('MIN_QUOTES', 'Vendor ขั้นต่ำที่ควรเทียบราคา') + numRow('SHORT_DESC_CHARS', 'คำอธิบายสั้นเกินไปถ้าน้อยกว่า (ตัวอักษร)') +
+      numRow('BATCH_SIZE', 'AI ตรวจต่อรอบ (รายการ)') + '</div></div>' +
+      '<div class="filters" style="margin-top:12px"><button class="btn" id="btnSave">บันทึกการตั้งค่า</button>' +
+      (s.storeUrl ? '<a class="small" href="' + esc(s.storeUrl) + '" target="_blank" rel="noopener">เปิด AI Store (ไฟล์แยก)</a>' : '') + '</div>';
+    h += '<h2>เกณฑ์ที่ AI ใช้ตรวจ</h2><p class="small muted">มาจาก Config_Settings (HINT_ACTIVITY_*) ใน DB รวมกับเกณฑ์กลาง ถ้าแก้ hint ใน DB ระบบจะตรวจใหม่ให้อัตโนมัติ</p><div class="grid cols-3">' +
+      Object.keys(D.criteria).map(function (t) {
+        return '<div class="card"><h3>' + esc(t) + '</h3><ol class="small">' + D.criteria[t].map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ol></div>';
+      }).join('') + '</div>';
+    $('tab-settings').innerHTML = h;
+    $('btnSave').addEventListener('click', function (e) {
+      var b = e.target; b.disabled = true;
+      var payload = { AI_PROVIDER: $('sProvider').value, AI_MODEL: $('sModel').value.trim(), AI_EFFORT: $('sEffort').value };
+      ['STALE_DAYS', 'SCORE_THRESHOLD', 'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE'].forEach(function (k) { payload[k] = Number($('s_' + k).value); });
+      call('apiSaveSettings', [payload]).then(function () { toast('บันทึกแล้ว'); load(true); })
+        .catch(function (err) { toast('บันทึกไม่สำเร็จ: ' + err.message); }).then(function () { b.disabled = false; });
+    });
+  }
+  function numRow(k, lbl) {
+    return '<div class="form-row"><label for="s_' + k + '">' + esc(lbl) + '</label><input type="number" min="0" id="s_' + k + '" value="' + esc(D.settings[k]) + '"></div>';
+  }
+
+  // ---------------- load ----------------
+  function renderAll() {
+    $('subtitle').textContent = 'ข้อมูล ณ ' + new Date(D.generatedAt).toLocaleString('th-TH') + ' · อ่านจาก "' + D.meta.name + '" (อ่านอย่างเดียว)';
+    renderOverview(); renderBuyers(); renderCases(); renderAi(); renderHealth(); renderSettings();
+  }
+  function load(refresh) {
+    $('loading').classList.remove('hidden'); $('error').classList.add('hidden');
+    $('btnRefresh').disabled = true;
+    call(refresh ? 'apiRefresh' : 'apiGetDashboard').then(function (json) {
+      D = JSON.parse(json);
+      renderAll();
+    }).catch(function (e) {
+      $('error').textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + e.message; $('error').classList.remove('hidden');
+    }).then(function () { $('loading').classList.add('hidden'); $('btnRefresh').disabled = false; });
+  }
+  $('btnRefresh').addEventListener('click', function () { load(true); });
+  try { var t = localStorage.getItem('dash.tab'); if (t && $('tab-' + t)) showTab(t); } catch (e) {}
+  load(false);
+})();
+</script>
