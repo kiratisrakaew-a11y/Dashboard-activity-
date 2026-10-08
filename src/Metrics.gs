@@ -113,7 +113,10 @@ function summarizeVendors_(cases, minQuotes) {
   out.normal.belowMin = withActs.filter(function (c) {
     return c.method === 'NORMAL' && c.hasClosedActivity && c.vendorsContacted < minQuotes;
   }).length;
+  out.normal.metMin = withActs.filter(function (c) { return c.method === 'NORMAL' && c.vendorsContacted >= minQuotes; }).length;
   out.special = part(withActs.filter(function (c) { return c.method === 'SPECIAL'; }));
+  out.negotiatedCases = withActs.filter(function (c) { return c.hasNegotiation; }).length;
+  out.negotiatedPct = withActs.length ? round2_(out.negotiatedCases / withActs.length * 100) : null;
   return out;
 }
 
@@ -215,6 +218,7 @@ function computeDashboard_(data) {
       stage: stage, stageLabel: STAGE_LABEL[stage],
       vendorsContacted: Object.keys(vendorSet).length,
       vendorsNegotiated: Object.keys(negoSet).length,
+      hasNegotiation: list.some(function (a) { return a.type === 'NEGOTIATION'; }),
       hasClosedActivity: stage === 3,
       stale: open && (lastDay === null ? (reqDay !== null && today - reqDay > cfg.STALE_DAYS) : today - lastDay > cfg.STALE_DAYS),
       avgScore: avg_(scores),

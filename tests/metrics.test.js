@@ -174,6 +174,7 @@ test('summarizeVendors_: เฉลี่ย Vendor ที่ติดต่อ/�
   assert.equal(v.normal.avgContacted, 2);   // (4+1+1)/3
   assert.equal(v.normal.belowMin, 1);       // นับเฉพาะที่สรุปผลแล้ว (ตัวที่ยังขอราคาไม่นับ)
   assert.equal(v.special.avgContacted, 1);
+  assert.equal(v.normal.metMin, 1);         // มีแค่ Case ที่ติดต่อ 4 ราย
   const e = G.summarizeVendors_([], 3);
   assert.equal(e.cases, 0);
   assert.equal(e.avgContacted, null);
@@ -191,4 +192,6 @@ test('computeDashboard_: vendorStats ราย Buyer และทั้งที
   assert.equal(a.normal.belowMin, 1);
   assert.equal(dash.vendorStats.cases, 2);
   assert.equal(dash.vendorStats.avgNegotiated, 1);  // C1=2, C2=0
+  assert.equal(dash.vendorStats.negotiatedCases, 1); // C1 มี NEGOTIATION
+  assert.equal(dash.vendorStats.negotiatedPct, 50);
 });
