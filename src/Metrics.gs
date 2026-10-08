@@ -30,6 +30,36 @@ function computeSavingsFrom_(x) {
   };
 }
 
+/**
+ * มูลค่า Case สำหรับจัดอันดับ: ราคาสุดท้าย → ราคาเสนอแรก → ราคาประมาณการ (คูณจำนวนเมื่อเป็นราคาต่อหน่วย)
+ *   caseExtract : savings จาก AI ตรวจทั้ง Case (มาก่อน)
+ *   actExtracts : extracted จาก AI ราย Activity เรียงตามลำดับที่ควรใช้ (CLOSED ก่อน แล้วล่าสุดก่อน)
+ * คืนค่า { value, basis: 'final'|'initial'|'estimate', source: 'case'|'activity' } หรือ null
+ */
+function caseValue_(caseExtract, actExtracts) {
+  var keys = [['final_price', 'final'], ['initial_price', 'initial'], ['estimate_price', 'estimate']];
+  function pick(x, source) {
+    if (!x) return null;
+    var qty = (x.price_basis === 'per_unit' && Number(x.quantity) > 0) ? Number(x.quantity) : 1;
+    for (var i = 0; i < keys.length; i++) {
+      var v = Number(x[keys[i][0]]);
+      if (v > 0) return { value: round2_(v * qty), basis: keys[i][1], source: source };
+    }
+    return null;
+  }
+  var r = pick(caseExtract, 'case');
+  if (r) return r;
+  // หาแบบ basis ดีที่สุดก่อน: ราคาสุดท้ายจาก Activity ใดก็ได้ ดีกว่าราคาเสนอแรกจาก Activity ล่าสุด
+  var xs = (actExtracts || []).filter(function (x) { return x; });
+  for (var k = 0; k < keys.length; k++) {
+    for (var j = 0; j < xs.length; j++) {
+      var p = pick(xs[j], 'activity');
+      if (p && p.basis === keys[k][1]) return p;
+    }
+  }
+  return null;
+}
+
 /** สาเหตุที่วัดผลการต่อรองของ Case ไม่ได้ */
 var PRICE_GAP_LABEL = {
   NO_BOTH: 'ไม่ระบุทั้งราคาเริ่มต้นและราคาสุดท้าย',
@@ -206,6 +236,13 @@ function computeDashboard_(data) {
       var code = priceGapReason_(cr ? cr.savings : null, list.map(function (a) { var r = reviews[a.id]; return r ? r.extracted : null; }));
       priceGap = { code: code, label: PRICE_GAP_LABEL[code] };
     }
+    // มูลค่า Case (จัดอันดับ) — ถ้ามีผลต่อรองแล้วใช้ราคาสุดท้ายเดียวกัน ตัวเลขจะตรงกับหน้าอื่น
+    var value = sav ? { value: round2_(sav.final * sav.quantity), basis: 'final', source: sav.source } :
+      caseValue_(cr ? cr.savings : null, list.slice().reverse()
+        .sort(function (x, y) { return (y.type === 'CLOSED') - (x.type === 'CLOSED'); })
+        .map(function (a) { var r = reviews[a.id]; return r ? r.extracted : null; }));
+    var closedDays = list.filter(function (a) { return a.type === 'CLOSED' && a.day !== null; }).map(function (a) { return a.day; });
+    var closedDay = closedDays.length ? Math.max.apply(null, closedDays) : null;
     var scores = list.map(function (a) { return a.score; });
     return {
       id: c.Case_ID, row: c._row, ref: c.Request_Ref || '', requester: c.Requester_Name || '',
@@ -227,6 +264,9 @@ function computeDashboard_(data) {
       stale: open && (lastDay === null ? (reqDay !== null && today - reqDay > cfg.STALE_DAYS) : today - lastDay > cfg.STALE_DAYS),
       avgScore: avg_(scores),
       savings: sav,
+      value: value,
+      closedDate: dayStr_(closedDay),
+      rankDate: dayStr_(closedDay !== null ? closedDay : lastDay),
       priceGap: priceGap,
       caseReview: cr ? {
         score: cr.score, grade: cr.grade, summary: cr.summary, criteria: cr.criteria,

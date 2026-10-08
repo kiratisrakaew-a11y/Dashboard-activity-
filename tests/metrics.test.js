@@ -207,3 +207,28 @@ test('week ของ Case/Activity ตรงกับ weekly[] และ byMetho
   assert.equal(all, dash.cases.length);
   assert.equal(G.weekKey_(null), '');
 });
+
+test('caseValue_: ราคาสุดท้าย → ราคาเสนอแรก → ประมาณการ, คูณจำนวน, ผลทั้ง Case มาก่อน', () => {
+  const v = (a, b) => plain(G.caseValue_(a, b));
+  assert.equal(G.caseValue_(null, []), null);
+  assert.equal(G.caseValue_({ final_price: null, initial_price: 0 }, [null]), null);
+  assert.deepEqual(v({ final_price: 900, initial_price: 1000 }, [{ final_price: 5 }]), { value: 900, basis: 'final', source: 'case' });
+  assert.deepEqual(v({ initial_price: 1000 }, []), { value: 1000, basis: 'initial', source: 'case' });
+  assert.deepEqual(v(null, [{ estimate_price: 50, quantity: 3, price_basis: 'per_unit' }]), { value: 150, basis: 'estimate', source: 'activity' });
+  // ราคาสุดท้ายจาก Activity ใดก็ได้ ดีกว่าราคาเสนอแรกจาก Activity แรกในลำดับ
+  assert.deepEqual(v(null, [{ initial_price: 1000 }, { final_price: 800 }]), { value: 800, basis: 'final', source: 'activity' });
+});
+
+test('computeDashboard_: มูลค่า Case, วันที่สรุปผล และวันที่ใช้จัดอันดับ', () => {
+  const dash = G.computeDashboard_(fixtures(G));
+  const c1 = dash.cases.find((c) => c.id === 'C1');
+  assert.equal(c1.closedDate, '2026-10-06');
+  assert.equal(c1.rankDate, '2026-10-06');
+  assert.equal(c1.value.basis, 'final');
+  assert.equal(c1.value.value, c1.savings.final * c1.savings.quantity);
+  const c2 = dash.cases.find((c) => c.id === 'C2');
+  assert.equal(c2.closedDate, '');
+  assert.equal(c2.rankDate, '2026-10-07');
+  assert.equal(c2.value, null);
+  assert.equal(dash.cases.find((c) => c.id === 'C3').rankDate, '');
+});

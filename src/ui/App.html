@@ -5,7 +5,9 @@
   var charts = {};
   var caseFilter = { buyer: '', dept: '', method: '', status: 'OPEN', flag: '', q: '' };
   var methodScope = 'OPEN';   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
-  var lastDrill = null;       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
+  var lastDrill = null;
+  var rankPeriod = { unit: 'month', date: '' };   // หน้า "จัดอันดับ" (date ว่าง = วันนี้)
+  try { var rp = JSON.parse(localStorage.getItem('dash.rankPeriod') || 'null'); if (rp && rp.unit) rankPeriod = rp; } catch (e) {}       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
 
   // ---------------- helpers ----------------
   function $(id) { return document.getElementById(id); }
@@ -311,6 +313,115 @@
       }).join('') + '</tbody></table></div>';
   }
 
+  // ---------------- จัดอันดับ ----------------
+  function dayOf(s) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || ''); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 : null; }
+  function isoOf(d) { return new Date(d * 86400000).toISOString().slice(0, 10); }
+  function thDate(d, opt) { return new Date(d * 86400000).toLocaleDateString('th-TH', Object.assign({ timeZone: 'UTC' }, opt)); }
+  /** ช่วงวันที่ของตัวกรอง (เลขวัน) — สัปดาห์เริ่มวันจันทร์ เหมือน weekStart_ ฝั่ง server */
+  function periodRange(p) {
+    if (p.unit === 'all') return null;
+    var d = dayOf(p.date || D.today);
+    if (p.unit === 'day') return { from: d, to: d, unit: 'day' };
+    if (p.unit === 'week') { var w = d - ((d + 3) % 7); return { from: w, to: w + 6, unit: 'week' }; }
+    var dt = new Date(d * 86400000), y = dt.getUTCFullYear(), m = dt.getUTCMonth();
+    return { from: Date.UTC(y, m, 1) / 86400000, to: Date.UTC(y, m + 1, 0) / 86400000, unit: 'month' };
+  }
+  function periodText(r) {
+    if (!r) return 'ทั้งหมด';
+    if (r.unit === 'day') return thDate(r.from, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+    if (r.unit === 'month') return thDate(r.from, { month: 'long', year: 'numeric' });
+    return thDate(r.from, { day: 'numeric', month: 'short' }) + ' – ' + thDate(r.to, { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+  function shiftPeriod(step) {
+    var d = dayOf(rankPeriod.date || D.today);
+    if (rankPeriod.unit === 'day') d += step;
+    else if (rankPeriod.unit === 'week') d += 7 * step;
+    else { var dt = new Date(d * 86400000); d = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + step, 1) / 86400000; }
+    rankPeriod.date = isoOf(d);
+  }
+  var BASIS_LABEL = { final: 'ราคาสุดท้าย', initial: 'ราคาเสนอแรก (ยังไม่มีราคาสุดท้าย)', estimate: 'ราคาประมาณการ (ยังไม่มีราคาจาก Vendor)' };
+
+  function renderRanking() {
+    try { localStorage.setItem('dash.rankPeriod', JSON.stringify(rankPeriod)); } catch (e) {}
+    var r = periodRange(rankPeriod);
+    var inPeriod = D.cases.filter(function (c) {
+      if (!r) return true;
+      var d = dayOf(c.rankDate); return d !== null && d >= r.from && d <= r.to;
+    });
+    var valued = inPeriod.filter(function (c) { return c.value; });
+    var saved = inPeriod.filter(function (c) { return c.savings; });
+    var totalValue = valued.reduce(function (s, c) { return s + c.value.value; }, 0);
+    var totalSaving = saved.reduce(function (s, c) { return s + c.savings.saving; }, 0);
+    var totalInitial = saved.reduce(function (s, c) { return s + c.savings.initial * c.savings.quantity; }, 0);
+    var units = [['day', 'วัน'], ['week', 'สัปดาห์'], ['month', 'เดือน'], ['all', 'ทั้งหมด']];
+
+    var h = '<div class="filters"><div class="seg" id="rankUnit">' + units.map(function (u) {
+        return '<button data-unit="' + u[0] + '" class="' + (rankPeriod.unit === u[0] ? 'active' : '') + '">' + u[1] + '</button>';
+      }).join('') + '</div>' +
+      (r ? '<button class="btn ghost" id="rankPrev" title="ช่วงก่อนหน้า">◀</button>' +
+        '<input type="date" id="rankDate" value="' + esc(rankPeriod.date || D.today) + '">' +
+        '<button class="btn ghost" id="rankNext" title="ช่วงถัดไป">▶</button>' +
+        '<button class="btn ghost" id="rankToday">วันนี้</button>' : '') +
+      '<span class="period-label">' + esc(periodText(r)) + '</span></div>';
+    h += '<div class="grid kpis">' +
+      kpi('Case ในช่วงนี้', fmt(inPeriod.length), 'มีมูลค่า ' + fmt(valued.length) + ' · ยังไม่มีราคา ' + fmt(inPeriod.length - valued.length)) +
+      kpi('มูลค่ารวม', baht(round2(totalValue)), 'ราคาสุดท้าย (ถ้ายังไม่มีใช้ราคาเสนอแรก/ประมาณการ)') +
+      kpi('ต่อรองลดได้รวม', baht(round2(totalSaving)), 'จาก ' + fmt(saved.length) + ' Case ที่มีราคาก่อน–หลังต่อรอง', 'good') +
+      kpi('% ลดลง', totalInitial ? fmt(totalSaving / totalInitial * 100, 2) + '%' : '–', 'ถ่วงน้ำหนักด้วยยอดเงิน') +
+      '</div>';
+    h += '<div class="grid cols-2" style="margin-top:12px">' +
+      '<div class="card"><h3>Top 10 มูลค่า Case</h3><div class="chart-box" style="height:360px"><canvas id="chRankValue"></canvas></div>' +
+        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ราคาสุดท้าย' +
+        '<span class="legend-dot" style="background:' + cssVar('--muted') + '"></span>ราคาเสนอแรก / ประมาณการ</div></div>' +
+      '<div class="card"><h3>Top 10 ยอดที่ต่อรองลดราคาได้ (บาท)</h3><div class="chart-box" style="height:360px"><canvas id="chRankSaving"></canvas></div>' +
+        '<div class="small muted">นับเฉพาะ Case ที่มีทั้งราคาก่อนและหลังต่อรอง</div></div>' +
+      '</div><p class="small muted">👆 คลิกที่แท่งเพื่อดูรายละเอียด Case และ Activity · ช่วงเวลานับตามวันที่สรุปผล (Activity CLOSED ล่าสุด) — ' +
+      'Case ที่ยังไม่สรุปผลใช้วันที่ Activity ล่าสุด · ตัวเลขราคา AI ดึงจากข้อความ Activity ถ้าไม่ถูกให้แก้ข้อความใน DB หรือกด "ตรวจทั้ง Case ใหม่"</p>';
+    $('tab-ranking').innerHTML = h;
+
+    $('rankUnit').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      rankPeriod.unit = b.dataset.unit; renderRanking();
+    });
+    if (r) {
+      $('rankPrev').addEventListener('click', function () { shiftPeriod(-1); renderRanking(); });
+      $('rankNext').addEventListener('click', function () { shiftPeriod(1); renderRanking(); });
+      $('rankToday').addEventListener('click', function () { rankPeriod.date = ''; renderRanking(); });
+      $('rankDate').addEventListener('change', function () { if (this.value) { rankPeriod.date = this.value; renderRanking(); } });
+    }
+
+    function caseLabel(c) { var t = c.ref || ''; return c.id.replace(/^[A-Z]+-\d{4}-/, '') + ' · ' + (t.length > 28 ? t.slice(0, 28) + '…' : t); }
+    function topChart(id, list, valueOf, color, tip) {
+      var top = list.slice().sort(function (a, b) { return valueOf(b) - valueOf(a); }).slice(0, 10);
+      if (!top.length) {
+        if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+        $(id).parentNode.innerHTML = '<div class="muted" style="padding:40px 0;text-align:center">ไม่มีข้อมูลในช่วงนี้</div>';
+        return;
+      }
+      chart(id, pickable({ type: 'bar', data: { labels: top.map(caseLabel),
+        datasets: [{ data: top.map(valueOf), backgroundColor: top.map(color), borderRadius: 4 }] },
+        options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+          tooltip: { callbacks: { title: function (it) { var c = top[it[0].dataIndex]; return c.id + ' · ' + c.ref; },
+            label: function (ctx) { return tip(top[ctx.dataIndex]); } } } },
+          scales: { x: { beginAtZero: true, ticks: { callback: function (v) { return fmt(v); } } } } } },
+      function (i) { openCase(top[i].id, r); }));
+    }
+    topChart('chRankValue', valued, function (c) { return c.value.value; },
+      function (c) { return c.value.basis === 'final' ? cssVar('--accent') : cssVar('--muted'); },
+      function (c) {
+        return [baht(c.value.value) + ' · ' + BASIS_LABEL[c.value.basis], 'Buyer: ' + nameOf(c.buyer) + ' · ' + c.method + ' · ' + c.stageLabel,
+          (c.closedDate ? 'สรุปผล ' : 'Activity ล่าสุด ') + c.rankDate];
+      });
+    topChart('chRankSaving', saved, function (c) { return c.savings.saving; }, function () { return cssVar('--good'); },
+      function (c) {
+        var s = c.savings;
+        return ['ลดได้ ' + baht(s.saving) + ' (' + pctTxt(s.pct) + ')',
+          baht(s.initial) + ' → ' + baht(s.final) + (s.quantity > 1 ? ' × ' + fmt(s.quantity) : ''),
+          'Buyer: ' + nameOf(c.buyer) + (s.vendor ? ' · Vendor: ' + s.vendor : '')];
+      });
+  }
+  function round2(n) { return Math.round(n * 100) / 100; }
+
   // ---------------- buyers ----------------
   // ---------- ผลการต่อรองราคา ----------
   function pctTxt(v) { return v == null ? '–' : fmt(v, 2) + '%'; }
@@ -607,7 +718,8 @@
     return r + '</div>';
   }
 
-  function openCase(id) {
+  /** range (optional) = { from, to } เป็นเลขวัน — Activity นอกช่วงจะแสดงจางลง */
+  function openCase(id, range) {
     var c = D.cases.filter(function (x) { return x.id === id; })[0];
     if (!c) return;
     var acts = D.activities.filter(function (a) { return a.caseId === id; })
@@ -629,8 +741,10 @@
       (c.priceGap ? '<div>Savings</div><div><span class="badge ' + (c.priceGap.code === 'NOT_REVIEWED' ? '' : 'bad') + '">วัดไม่ได้: ' + esc(c.priceGap.label) + '</span></div>' : '') +
       '<div>DB</div><div>' + sheetLink('Cases', c.row, 'เปิดแถวใน Sheet') + '</div></div>';
     h += caseReviewBlock(c);
-    h += '<h2>Activity (' + acts.length + ')</h2><div class="timeline">' + (acts.length ? acts.map(function (a) {
-      return '<div class="tl-item"><div class="tl-head"><b>' + esc(a.id) + '</b><span class="badge info">' + esc(a.type) + '</span>' +
+    h += '<h2>Activity (' + acts.length + ')</h2>' + (range ? '<p class="small muted">ช่วงที่เลือก: ' + esc(periodText(range)) +
+      ' — Activity นอกช่วงแสดงจางลง</p>' : '') + '<div class="timeline">' + (acts.length ? acts.map(function (a) {
+      var rc = !range ? '' : (a.day != null && a.day >= range.from && a.day <= range.to ? ' in-range' : ' out-of-range');
+      return '<div class="tl-item' + rc + '"><div class="tl-head"><b>' + esc(a.id) + '</b><span class="badge info">' + esc(a.type) + '</span>' +
         '<span class="badge">' + esc(a.channel || 'ไม่ระบุช่องทาง') + '</span><span class="small muted">' + esc(String(a.date).slice(0, 10)) + ' · ' + esc(nameOf(a.by)) + '</span></div>' +
         (a.vendorName ? '<div class="small muted">Vendor: ' + esc(a.vendorName) + (a.vendorStatus ? ' (' + esc(a.vendorStatus) + ')' : '') + '</div>' : '') +
         '<div class="desc">' + esc(a.desc) + '</div>' +
@@ -863,7 +977,7 @@
   // ---------------- load ----------------
   function renderAll() {
     $('subtitle').textContent = 'ข้อมูล ณ ' + new Date(D.generatedAt).toLocaleString('th-TH') + ' · อ่านจาก "' + D.meta.name + '" (อ่านอย่างเดียว)';
-    renderOverview(); renderBuyers(); renderCases(); renderAi(); renderHealth(); renderSettings();
+    renderOverview(); renderBuyers(); renderRanking(); renderCases(); renderAi(); renderHealth(); renderSettings();
   }
   function load(refresh) {
     $('loading').classList.remove('hidden'); $('error').classList.add('hidden');
