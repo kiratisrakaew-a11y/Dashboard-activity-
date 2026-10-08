@@ -51,6 +51,9 @@
   .kpi.good .value { color: var(--good); }
   .kpi.clickable { cursor: pointer; }
   .kpi.clickable:hover { border-color: var(--accent); }
+  .kpi { position: relative; }
+  .kpi .kpi-go { position: absolute; top: 10px; right: 12px; font-size: 13px; color: var(--muted); opacity: .6; }
+  .kpi.clickable:hover .kpi-go { color: var(--accent); opacity: 1; }
   .chart-box { position: relative; height: 240px; }
   .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
   .card-head h3 { margin: 0; }
