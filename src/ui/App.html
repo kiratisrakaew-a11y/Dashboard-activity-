@@ -179,7 +179,7 @@
   function negoSection() {
     var list = D.buyers.filter(function (b) { return b.nego && (b.nego.cases || b.closedCases || b.nego.unmeasured || b.nego.notReviewed); })
       .sort(function (a, b) { return b.nego.saving - a.nego.saving; });
-    var h = '<h2>ผลการต่อรองราคารายคน</h2><div class="grid cols-2"><div class="card table-wrap"><table><thead><tr>' +
+    var h = '<h2>ผลการต่อรองราคารายคน</h2><div class="card table-wrap"><table><thead><tr>' +
       '<th>Buyer</th><th class="num" title="Case ที่ AI ดึงราคาก่อน/หลังต่อรองได้ (รวม Case ที่ยังต่อรองอยู่)">Case ที่มีตัวเลข</th><th class="num">ราคาตั้งต้นรวม</th>' +
       '<th class="num">ต่อรองได้ (บาท)</th><th class="num" title="ถ่วงน้ำหนักด้วยยอดเงิน">% ลดลง</th><th class="num">% เฉลี่ยต่อ Case</th>' +
       '<th class="num">ต่ำสุด–สูงสุด</th><th class="num" title="ราคาสุดท้ายเทียบราคาประมาณการ (ติดลบ = ต่ำกว่างบ)">เทียบราคาประมาณการ</th>' +
@@ -190,7 +190,7 @@
       (D.nego ? negoRow('รวมทั้งทีม', D.nego, D.nego.closedCases, ' style="background:var(--surface-2)"', true) : '') +
       '</tbody></table><p class="small muted">คลิกที่ชื่อเพื่อดูราย Case · % ลดลง = ยอดที่ต่อรองได้ ÷ ราคาตั้งต้นรวม (งานยอดใหญ่มีน้ำหนักมากกว่า) · ' +
       'ตัวเลขดึงจากข้อความด้วย AI นับเฉพาะ Case ที่มีทั้งราคาก่อนและหลังต่อรอง ถ้าตัวเลขไม่ถูก ให้กด "ตรวจทั้ง Case ใหม่" หรือแก้ข้อความใน DB</p></div>' +
-      '<div class="card"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoBuyer"></canvas></div></div>' +
+      '<div class="grid cols-2" style="margin-top:12px"><div class="card"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoBuyer"></canvas></div></div>' +
       '<div class="card"><h3>% ที่ต่อรองลดลงได้ ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoPctBuyer"></canvas></div>' +
       '<p class="small muted">% ถ่วงน้ำหนักด้วยยอดเงิน · แท่งสีเทา = ค่ารวมทั้งทีม</p></div></div>' +
       '<div id="negoDetail"></div>' + unmeasuredTable(null);
