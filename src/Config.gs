@@ -15,6 +15,7 @@ var DEFAULTS = {
   MIN_QUOTES: 3,                  // จำนวน vendor ขั้นต่ำที่ควรเทียบราคา
   SHORT_DESC_CHARS: 30,           // คำอธิบายสั้นกว่านี้ = สั้นเกินไป
   BATCH_SIZE: 15,                 // จำนวน Activity ที่ AI ตรวจต่อรอบ
+  CASE_BATCH_SIZE: 10,            // จำนวน Case ที่ AI ตรวจทั้ง Case ต่อรอบ
   CACHE_SECONDS: 300              // แคชข้อมูลที่อ่านจาก DB
 };
 
@@ -32,7 +33,7 @@ var API_KEY_PROPS = {
 
 /** คีย์ที่ HEAD เปลี่ยนได้จากหน้า UI (เก็บในชีต Settings ของ AI Store) */
 var EDITABLE_SETTINGS = ['AI_PROVIDER', 'AI_MODEL', 'AI_EFFORT', 'STALE_DAYS', 'SCORE_THRESHOLD',
-  'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE'];
+  'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CASE_BATCH_SIZE'];
 
 var configMemo_ = null; // memo ต่อ 1 execution
 
@@ -51,7 +52,7 @@ function getConfig_() {
       if (overrides[k] !== undefined && overrides[k] !== '') cfg[k] = overrides[k];
     });
   }
-  ['STALE_DAYS', 'SCORE_THRESHOLD', 'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CACHE_SECONDS']
+  ['STALE_DAYS', 'SCORE_THRESHOLD', 'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CASE_BATCH_SIZE', 'CACHE_SECONDS']
     .forEach(function (k) { cfg[k] = Number(cfg[k]); });
   cfg.AI_PROVIDER = String(cfg.AI_PROVIDER).toLowerCase();
   if (!cfg.AI_MODEL) cfg.AI_MODEL = DEFAULT_MODELS[cfg.AI_PROVIDER] || '';

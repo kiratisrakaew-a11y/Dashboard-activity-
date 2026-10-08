@@ -1,0 +1,89 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const G = require('./load')();
+const fixtures = require('./fixtures');
+const plain = (x) => JSON.parse(JSON.stringify(x));
+
+const CASE = { Case_ID: 'C1', Method: 'NORMAL', Status: 'OPEN', Request_Ref: 'ซื้อจอ', Sub_Type: 'S', Budget_Type: 'OPEX',
+  Request_Date: '2026-09-30T17:00:00.000Z' };
+const A1 = { Activity_ID: 'A1', Case_ID: 'C1', Version: 1, Activity_Type: 'CONTACT VENDOR', Activity_Date: '2026-10-01T04:00:00.000Z',
+  Activity_Description: 'ขอราคา V1', Next_Action: 'ติดตาม', Next_Action_Done: false, Vendor_ID: 'V1', Updated_At: '2026-10-01T04:00:00.000Z' };
+const A2 = { Activity_ID: 'A2', Case_ID: 'C1', Version: 1, Activity_Type: 'CLOSED', Activity_Date: '2026-10-03T04:00:00.000Z',
+  Activity_Description: 'เลือก V1 ราคา 90,000', Next_Action: '', Next_Action_Done: false, Vendor_ID: 'V1', Updated_At: '2026-10-03T04:00:00.000Z' };
+
+test('caseFingerprint_ เปลี่ยนเมื่อเพิ่ม/แก้ Activity, Method หรือเกณฑ์ และไม่สนลำดับ', () => {
+  const f = G.caseFingerprint_(CASE, [A1], 'v');
+  assert.equal(f, G.caseFingerprint_({ ...CASE }, [{ ...A1 }], 'v'));
+  assert.notEqual(f, G.caseFingerprint_(CASE, [A1, A2], 'v'));                    // เพิ่ม Activity
+  assert.notEqual(f, G.caseFingerprint_(CASE, [{ ...A1, Version: 2 }], 'v'));     // แก้ Activity
+  assert.notEqual(f, G.caseFingerprint_(CASE, [{ ...A1, Next_Action_Done: true }], 'v'));
+  assert.notEqual(f, G.caseFingerprint_({ ...CASE, Method: 'SPECIAL' }, [A1], 'v'));
+  assert.notEqual(f, G.caseFingerprint_(CASE, [A1], 'w'));
+  assert.equal(G.caseFingerprint_(CASE, [A1, A2], 'v'), G.caseFingerprint_(CASE, [A2, A1], 'v'));
+});
+
+test('pendingCases_ ตรวจ Case ที่มี Activity ใหม่ ข้าม Case ที่ไม่มี Activity และที่ไม่เปลี่ยน', () => {
+  const C2 = { ...CASE, Case_ID: 'C2' };
+  const C3 = { ...CASE, Case_ID: 'C3' };
+  const B1 = { ...A1, Activity_ID: 'B1', Case_ID: 'C2', Updated_At: '2026-10-05T00:00:00.000Z' };
+  const acts = { C1: [A1], C2: [B1] };
+  const reviewed = { C1: { hash: G.caseFingerprint_(CASE, [A1], 'v') } };
+  assert.deepEqual(plain(G.pendingCases_([CASE, C2, C3], acts, reviewed, 'v').map(c => c.Case_ID)), ['C2']);
+  // เพิ่ม A2 เข้า C1 ที่เคยตรวจแล้ว → ต้องกลับมาตรวจใหม่ และเรียงตาม Activity ล่าสุด
+  acts.C1 = [A1, { ...A2, Updated_At: '2026-10-07T00:00:00.000Z' }];
+  assert.deepEqual(plain(G.pendingCases_([CASE, C2, C3], acts, reviewed, 'v').map(c => c.Case_ID)), ['C1', 'C2']);
+});
+
+test('caseCriteria_ ใช้ชีต Criteria ก่อน แล้วค่าในโค้ด แยก NORMAL/SPECIAL', () => {
+  assert.equal(G.caseCriteria_('NORMAL', {}).source, 'ค่าตั้งต้นในระบบ');
+  assert.ok(G.caseCriteria_('NORMAL', {}).list.some(c => /เหตุผลที่ไม่เลือกเจ้าอื่น/.test(c)));
+  assert.ok(!G.caseCriteria_('SPECIAL', {}).list.some(c => /ไม่เลือกเจ้าอื่น/.test(c)));
+  assert.deepEqual(plain(G.caseCriteria_('special', { 'SPECIAL|CASE': ['ก'] }).list), ['ก']);
+  assert.notEqual(G.caseCriteriaVersion_({}), G.caseCriteriaVersion_({ 'SPECIAL|CASE': ['ก'] }));
+  assert.equal(G.caseCriteriaVersion_({}), G.caseCriteriaVersion_({ 'SPECIAL|CLOSED': ['ก'] })); // เกณฑ์ราย Activity ไม่กระทบ
+});
+
+test('buildCasePrompt_ ใส่ทุก Activity ตามลำดับวันที่ ภายใน <case>', () => {
+  const p = G.buildCasePrompt_(CASE, [A2, A1], { V1: { name: 'บจก. หนึ่ง' } }, ['ก', 'ข']);
+  assert.match(p.user, /<case>[\s\S]*<\/case>/);
+  assert.ok(p.user.indexOf('(A1)') < p.user.indexOf('(A2)'));
+  assert.match(p.user, /Timeline \(2 Activity/);
+  assert.match(p.user, /บจก\. หนึ่ง/);
+  assert.match(p.user, /1\. ก\n2\. ข/);
+  assert.match(p.system, /SPECIAL = กรณีพิเศษ/);
+});
+
+test('validateCaseReview_ คิดคะแนนและทำความสะอาดข้อมูล', () => {
+  const r = G.validateCaseReview_({
+    summary: 'ส', criteria: [{ name: 'ก', result: 'yes', comment: '' }, { name: 'ข', result: 'partial', comment: '' }],
+    missing_steps: ['x', ' '], inconsistencies: ['ราคาไม่ตรง'], ready_to_close: true, next_step: 'ส่งอนุมัติ', risk: 'weird',
+    savings: { vendor_selected: 'V', initial_price: '100000', final_price: 90000, estimate_price: null, quantity: null, price_basis: 'total' }
+  }, ['ก', 'ข']);
+  assert.equal(r.score, 75);
+  assert.equal(r.grade, 'B');
+  assert.deepEqual(plain(r.missing_steps), ['x']);
+  assert.equal(r.risk, 'medium');
+  assert.equal(r.savings.initial_price, 100000);
+  assert.equal(r.ready_to_close, true);
+});
+
+test('Dashboard ใช้ savings จาก Case review ก่อน และสรุป ai.cases', () => {
+  const d = fixtures(G);
+  d.caseReviews = {
+    C1: { score: 80, grade: 'B', summary: 's', criteria: [], missing_steps: [], inconsistencies: ['ราคา CLOSED ไม่ตรงกับ NEGOTIATION'],
+      ready_to_close: true, next_step: 'n', risk: 'high', stale: false,
+      savings: { initial_price: 200000, final_price: 150000, estimate_price: null, quantity: null, price_basis: 'total' } }
+  };
+  const dash = G.computeDashboard_(d);
+  const c1 = dash.cases.find(c => c.id === 'C1');
+  assert.equal(c1.savings.saving, 50000);
+  assert.equal(c1.savings.source, 'case');
+  assert.equal(c1.caseReview.readyToClose, true);
+  assert.deepEqual(plain(dash.ai.cases), { reviewed: 1, pending: 1, avgScore: 80, readyToClose: 1, withInconsistency: 1, highRisk: 1 });
+  const h = G.checkDataHealth_(d, dash);
+  assert.ok(h.issues.some(i => i.code === 'CASE_AI_INCONSISTENT' && i.caseId === 'C1'));
+  // ไม่มี Case review → ใช้วิธีเดิมจาก Activity
+  delete d.caseReviews;
+  const c1b = G.computeDashboard_(d).cases.find(c => c.id === 'C1');
+  assert.equal(c1b.savings.source, 'activity');
+});

@@ -40,13 +40,23 @@ function loadData_() {
     var r = reviews[a.Activity_ID];
     if (r) r.stale = r.hash !== activityFingerprint_(a, critVer, methodByCase[a.Case_ID]);
   });
+  // ผลตรวจทั้ง Case + ติดป้าย stale ถ้ามี Activity ใหม่/ถูกแก้หลังจากตรวจ
+  var caseReviews = {};
+  try { caseReviews = Store.readCaseReviews(); } catch (e) { console.warn(e.message); }
+  var caseCritVer = caseCriteriaVersion_(storeCriteria);
+  var actsByCase = groupActsByCase_(activities);
+  cases.forEach(function (c) {
+    var r = caseReviews[c.Case_ID];
+    if (r) r.stale = r.hash !== caseFingerprint_(c, actsByCase[c.Case_ID] || [], caseCritVer);
+  });
   // ส่งเฉพาะ vendor ที่ถูกอ้างถึง
   var allVendors = DbReader.readVendorsMap();
   var vendors = {};
   activities.forEach(function (a) { if (a.Vendor_ID && allVendors[a.Vendor_ID]) vendors[a.Vendor_ID] = allVendors[a.Vendor_ID]; });
   return {
     cfg: cfg, cases: cases, activities: activities, users: DbReader.readUsers(),
-    vendors: vendors, reviews: reviews, settings: settings, storeCriteria: storeCriteria, today: dayNum_(new Date())
+    vendors: vendors, reviews: reviews, settings: settings, storeCriteria: storeCriteria,
+    caseReviews: caseReviews, today: dayNum_(new Date())
   };
 }
 
@@ -65,6 +75,8 @@ function apiGetDashboard() {
       var src = criteriaSource_(data.settings, t, m, data.storeCriteria);
       dash.criteria[m][t] = { source: src.source, list: src.list.concat(GENERIC_CRITERIA) };
     });
+    var cc = caseCriteria_(m, data.storeCriteria);
+    dash.criteria[m]['ทั้ง Case'] = { source: cc.source, list: cc.list };
   });
   dash.settings = publicSettings_(data.cfg);
   try { dash.runs = Store.readRuns(5); } catch (e) { dash.runs = []; }
@@ -87,6 +99,11 @@ function publicSettings_(cfg) {
 function apiReviewNow(activityId) {
   requireHead_();
   return JSON.stringify(reviewActivityNow_(String(activityId)));
+}
+
+function apiReviewCaseNow(caseId) {
+  requireHead_();
+  return JSON.stringify(reviewCaseNow_(String(caseId)));
 }
 
 function apiRunBatch() {

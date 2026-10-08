@@ -8,7 +8,11 @@
  */
 
 function computeSavings_(review) {
-  var x = review && review.extracted;
+  return computeSavingsFrom_(review && review.extracted);
+}
+
+/** x = { initial_price, final_price, estimate_price, quantity, price_basis } */
+function computeSavingsFrom_(x) {
   if (!x) return null;
   var ini = Number(x.initial_price), fin = Number(x.final_price);
   if (!(ini > 0) || !(fin > 0) || fin > ini) return null;
@@ -92,9 +96,15 @@ function computeDashboard_(data) {
       if (a.vendorId) vendorSet[a.vendorId] = 1;
     });
     // savings: ใช้ Activity ล่าสุดที่ AI ดึงตัวเลขได้ (ให้ CLOSED มาก่อน)
-    var sav = null;
-    list.slice().reverse().sort(function (x, y) { return (y.type === 'CLOSED') - (x.type === 'CLOSED'); })
-      .some(function (a) { sav = computeSavings_(reviews[a.id]); return !!sav; });
+    // savings: ใช้ผล AI ตรวจทั้ง Case ก่อน ไม่งั้นใช้ Activity ล่าสุดที่ AI ดึงตัวเลขได้ (ให้ CLOSED มาก่อน)
+    var cr = (data.caseReviews || {})[c.Case_ID] || null;
+    var sav = cr ? computeSavingsFrom_(cr.savings) : null;
+    if (sav) sav.source = 'case';
+    if (!sav) {
+      list.slice().reverse().sort(function (x, y) { return (y.type === 'CLOSED') - (x.type === 'CLOSED'); })
+        .some(function (a) { sav = computeSavings_(reviews[a.id]); return !!sav; });
+      if (sav) sav.source = 'activity';
+    }
     var scores = list.map(function (a) { return a.score; });
     return {
       id: c.Case_ID, row: c._row, ref: c.Request_Ref || '', requester: c.Requester_Name || '',
@@ -112,7 +122,13 @@ function computeDashboard_(data) {
       hasClosedActivity: stage === 3,
       stale: open && (lastDay === null ? (reqDay !== null && today - reqDay > cfg.STALE_DAYS) : today - lastDay > cfg.STALE_DAYS),
       avgScore: avg_(scores),
-      savings: sav
+      savings: sav,
+      caseReview: cr ? {
+        score: cr.score, grade: cr.grade, summary: cr.summary, criteria: cr.criteria,
+        missing: cr.missing_steps || [], inconsistencies: cr.inconsistencies || [],
+        readyToClose: !!cr.ready_to_close, nextStep: cr.next_step, risk: cr.risk,
+        stale: !!cr.stale, reviewedAt: cr.reviewed_at, activityCount: cr.activity_count
+      } : null
     };
   });
   var openCases = cases.filter(function (c) { return c.status === 'OPEN'; });
@@ -183,6 +199,16 @@ function computeDashboard_(data) {
     gradeDist: countBy_(reviewedActs, function (a) { return a.grade; }),
     lowCount: reviewedActs.filter(function (a) { return a.score < cfg.SCORE_THRESHOLD; }).length,
     typeMismatchCount: reviewedActs.filter(function (a) { return a.typeMismatch; }).length
+  };
+  var withActs = cases.filter(function (c) { return c.activityCount > 0; });
+  var caseRev = withActs.filter(function (c) { return c.caseReview; });
+  aiSummary.cases = {
+    reviewed: caseRev.length,
+    pending: withActs.filter(function (c) { return !c.caseReview || c.caseReview.stale; }).length,
+    avgScore: avg_(caseRev.map(function (c) { return c.caseReview.score; })),
+    readyToClose: caseRev.filter(function (c) { return c.caseReview.readyToClose && c.status === 'OPEN'; }).length,
+    withInconsistency: caseRev.filter(function (c) { return c.caseReview.inconsistencies.length > 0; }).length,
+    highRisk: caseRev.filter(function (c) { return c.caseReview.risk === 'high' && c.status === 'OPEN'; }).length
   };
 
   // ---------- Overview ----------

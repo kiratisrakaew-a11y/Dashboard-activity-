@@ -7,9 +7,13 @@ var STORE_SHEETS = {
   AI_Reviews: ['Activity_ID', 'Activity_Version', 'Hash', 'Provider', 'Model', 'Score', 'Grade',
     'Criteria_JSON', 'Missing', 'Suggestion', 'Improved_Example', 'Type_Mismatch', 'Suggested_Type',
     'Extracted_JSON', 'Tokens_In', 'Tokens_Out', 'Reviewed_At'],
-  AI_Runs: ['Started_At', 'Finished_At', 'Provider', 'Model', 'Pending', 'Reviewed', 'Errors', 'Message'],
+  AI_Runs: ['Started_At', 'Finished_At', 'Provider', 'Model', 'Pending', 'Reviewed', 'Errors', 'Message',
+    'Cases_Pending', 'Cases_Reviewed'],
   Settings: ['Key', 'Value', 'Description'],
-  Criteria: ['Method', 'Activity_Type', 'Criteria', 'Is_Active', 'Note']
+  Criteria: ['Method', 'Activity_Type', 'Criteria', 'Is_Active', 'Note'],
+  Case_Reviews: ['Case_ID', 'Hash', 'Activity_Count', 'Provider', 'Model', 'Score', 'Grade', 'Summary',
+    'Criteria_JSON', 'Missing_Steps', 'Inconsistencies', 'Ready_To_Close', 'Next_Step', 'Risk',
+    'Savings_JSON', 'Tokens_In', 'Tokens_Out', 'Reviewed_At']
 };
 
 /** เกณฑ์ตั้งต้นของงาน SPECIAL (เลือก Vendor รายเดียว ไม่ต้องมีคู่เทียบ) — 1 เกณฑ์ต่อบรรทัด */
@@ -35,7 +39,9 @@ function criteriaSeed_() {
       'ราคาอ้างอิงที่ยืนยันว่าราคาเหมาะสม (ราคาเดิม / PO เก่า / ราคาประมาณการ / historical price)',
       'ราคาสุดท้ายที่ปิด',
       'ส่วนต่างจาก Budget / ราคาอ้างอิง (Savings)'
-    ].join('\n'), true, note]
+    ].join('\n'), true, note],
+    ['NORMAL', 'CASE', CASE_DEFAULT_CRITERIA.NORMAL.join('\n'), true, 'เกณฑ์ AI ตรวจทั้ง Case (จัดซื้อปกติ)'],
+    ['SPECIAL', 'CASE', CASE_DEFAULT_CRITERIA.SPECIAL.join('\n'), true, 'เกณฑ์ AI ตรวจทั้ง Case (กรณีพิเศษ)']
   ];
 }
 
@@ -48,7 +54,8 @@ function settingsSeed_() {
     ['SCORE_THRESHOLD', DEFAULTS.SCORE_THRESHOLD, 'คะแนน AI ต่ำกว่านี้ = ต้องปรับปรุง'],
     ['MIN_QUOTES', DEFAULTS.MIN_QUOTES, 'จำนวน vendor ขั้นต่ำที่ควรเทียบราคา (Method NORMAL)'],
     ['SHORT_DESC_CHARS', DEFAULTS.SHORT_DESC_CHARS, 'คำอธิบายสั้นกว่านี้ถือว่าสั้นเกินไป'],
-    ['BATCH_SIZE', DEFAULTS.BATCH_SIZE, 'จำนวน Activity ที่ AI ตรวจต่อรอบ']
+    ['BATCH_SIZE', DEFAULTS.BATCH_SIZE, 'จำนวน Activity ที่ AI ตรวจต่อรอบ'],
+    ['CASE_BATCH_SIZE', DEFAULTS.CASE_BATCH_SIZE, 'จำนวน Case ที่ AI ตรวจทั้ง Case ต่อรอบ']
   ];
 }
 
@@ -66,9 +73,19 @@ var Store = (function () {
     return SpreadsheetApp.openById(cfg.STORE_ID);
   }
 
+  /** คืนชีต — ถ้าเป็นชีตที่ระบบรู้จักแต่ยังไม่มี (deployment เก่า) จะสร้างให้ และเติมหัวคอลัมน์ใหม่ที่ขาด */
   function sheet_(name) {
-    var sh = open_().getSheetByName(name);
-    if (!sh) throw new Error('AI Store ไม่มีชีต ' + name + ' — รัน setup() อีกครั้ง');
+    var ss = open_();
+    var sh = ss.getSheetByName(name);
+    var h = STORE_SHEETS[name];
+    if (!sh) {
+      if (!h) throw new Error('AI Store ไม่มีชีต ' + name + ' — รัน setup() อีกครั้ง');
+      sh = ss.insertSheet(name);
+      sh.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold');
+      sh.setFrozenRows(1);
+    } else if (h && sh.getLastColumn() < h.length) {
+      sh.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold');
+    }
     return sh;
   }
 
@@ -146,23 +163,73 @@ var Store = (function () {
       rv.type_mismatch, rv.suggested_type, JSON.stringify(rv.extracted), rv.tokens_in, rv.tokens_out, rv.reviewed_at];
   }
 
-  function upsertReviews(list) {
-    if (!list.length) return;
-    var sh = sheet_('AI_Reviews');
+  /** upsert ตามคีย์ในคอลัมน์ A */
+  function upsertRows_(sheetName, rows) {
+    if (!rows.length) return;
+    var sh = sheet_(sheetName);
+    var width = STORE_SHEETS[sheetName].length;
     var last = sh.getLastRow();
     var ids = last > 1 ? sh.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return String(r[0]); }) : [];
     var appends = [];
-    list.forEach(function (rv) {
-      var idx = ids.indexOf(rv.activity_id);
-      if (idx >= 0) sh.getRange(idx + 2, 1, 1, STORE_SHEETS.AI_Reviews.length).setValues([toRow_(rv)]);
-      else appends.push(toRow_(rv));
+    rows.forEach(function (row) {
+      var idx = ids.indexOf(String(row[0]));
+      if (idx >= 0) sh.getRange(idx + 2, 1, 1, width).setValues([row]);
+      else appends.push(row);
     });
-    if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, appends[0].length).setValues(appends);
+    if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, width).setValues(appends);
+  }
+
+  function upsertReviews(list) {
+    upsertRows_('AI_Reviews', list.map(toRow_));
+  }
+
+  function toCaseRow_(rv) {
+    return [rv.case_id, rv.hash, rv.activity_count, rv.provider, rv.model, rv.score, rv.grade, rv.summary,
+      JSON.stringify(rv.criteria), (rv.missing_steps || []).join('\n'), (rv.inconsistencies || []).join('\n'),
+      rv.ready_to_close, rv.next_step, rv.risk, JSON.stringify(rv.savings), rv.tokens_in, rv.tokens_out, rv.reviewed_at];
+  }
+
+  function upsertCaseReviews(list) {
+    upsertRows_('Case_Reviews', list.map(toCaseRow_));
+  }
+
+  /** → { Case_ID: caseReview } */
+  function readCaseReviews() {
+    var sh = sheet_('Case_Reviews');
+    var last = sh.getLastRow();
+    var out = {};
+    if (last < 2) return out;
+    var h = STORE_SHEETS.Case_Reviews;
+    function lines(v) { return v ? String(v).split('\n').filter(function (x) { return x.trim(); }) : []; }
+    sh.getRange(2, 1, last - 1, h.length).getValues().forEach(function (r) {
+      if (!r[0]) return;
+      var o = {};
+      h.forEach(function (k, i) { o[k] = r[i]; });
+      out[o.Case_ID] = {
+        case_id: o.Case_ID,
+        hash: String(o.Hash),
+        activity_count: Number(o.Activity_Count),
+        provider: o.Provider,
+        model: o.Model,
+        score: Number(o.Score),
+        grade: o.Grade,
+        summary: String(o.Summary || ''),
+        criteria: parseJson_(o.Criteria_JSON, []),
+        missing_steps: lines(o.Missing_Steps),
+        inconsistencies: lines(o.Inconsistencies),
+        ready_to_close: o.Ready_To_Close === true,
+        next_step: String(o.Next_Step || ''),
+        risk: String(o.Risk || ''),
+        savings: parseJson_(o.Savings_JSON, null),
+        reviewed_at: o.Reviewed_At instanceof Date ? o.Reviewed_At.toISOString() : String(o.Reviewed_At)
+      };
+    });
+    return out;
   }
 
   function logRun(run) {
     sheet_('AI_Runs').appendRow([run.started_at, run.finished_at, run.provider || '', run.model || '',
-      run.pending, run.reviewed, run.errors, run.message || '']);
+      run.pending, run.reviewed, run.errors, run.message || '', run.cases_pending || 0, run.cases_reviewed || 0]);
   }
 
   function ensureCriteriaSheet_(ss) {
@@ -204,7 +271,8 @@ var Store = (function () {
     if (last < 2) return [];
     var n = Math.min(limit || 10, last - 1);
     return sh.getRange(last - n + 1, 1, n, STORE_SHEETS.AI_Runs.length).getValues().reverse().map(function (r) {
-      return { started: String(r[0]), finished: String(r[1]), provider: r[2], model: r[3], pending: r[4], reviewed: r[5], errors: r[6], message: r[7] };
+      return { started: String(r[0]), finished: String(r[1]), provider: r[2], model: r[3], pending: r[4], reviewed: r[5],
+        errors: r[6], message: r[7], casesPending: r[8], casesReviewed: r[9] };
     });
   }
 
@@ -245,6 +313,8 @@ var Store = (function () {
     logRun: logRun,
     readRuns: readRuns,
     readCriteria: readCriteria,
+    readCaseReviews: readCaseReviews,
+    upsertCaseReviews: upsertCaseReviews,
     ensure: ensure
   };
 })();

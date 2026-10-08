@@ -12,6 +12,7 @@ var HEALTH_RULES = {
   CASE_REQUIRED_BEFORE_REQUEST: { severity: 'medium', label: 'Required_Date อยู่ก่อน Request_Date' },
   CASE_INTAKE_INCOMPLETE: { severity: 'low', label: 'Intake ยังไม่ครบ (Intake_Complete = FALSE)' },
   CASE_NO_BUYER: { severity: 'high', label: 'Case ไม่มี Buyer_Owner' },
+  CASE_AI_INCONSISTENT: { severity: 'medium', label: 'AI พบข้อมูลขัดกันระหว่าง Activity ใน Case' },
   CASE_FEW_QUOTES: { severity: 'medium', label: 'จัดซื้อปกติ (NORMAL) สรุปผลแล้วแต่เทียบราคาน้อยกว่าเกณฑ์' },
   ACT_NO_CHANNEL: { severity: 'low', label: 'Activity ไม่ระบุ Channel' },
   ACT_SHORT_DESC: { severity: 'medium', label: 'คำอธิบาย Activity สั้นเกินไป' },
@@ -49,6 +50,9 @@ function checkDataHealth_(data, dash) {
     if (rq !== null && rd !== null && rd < rq) add('CASE_REQUIRED_BEFORE_REQUEST', 'Cases', c._row, c.Case_ID, c.Case_ID, dayStr_(rd) + ' < ' + dayStr_(rq));
     if (c.Intake_Complete === false && c.Status === 'OPEN') add('CASE_INTAKE_INCOMPLETE', 'Cases', c._row, c.Case_ID, c.Case_ID, c.Intake_Note || '');
     if (isBlank_(c.Buyer_Owner)) add('CASE_NO_BUYER', 'Cases', c._row, c.Case_ID, c.Case_ID);
+    if (d && d.caseReview && d.caseReview.inconsistencies.length) {
+      add('CASE_AI_INCONSISTENT', 'Cases', c._row, c.Case_ID, c.Case_ID, d.caseReview.inconsistencies.join(' / '));
+    }
     // SPECIAL เลือก Vendor รายเดียวได้ จึงตรวจเฉพาะ NORMAL
     if (c.Method === 'NORMAL' && d && d.hasClosedActivity && d.vendorsContacted < cfg.MIN_QUOTES) {
       add('CASE_FEW_QUOTES', 'Cases', c._row, c.Case_ID, c.Case_ID, 'ติดต่อ ' + d.vendorsContacted + ' ราย (เกณฑ์ ' + cfg.MIN_QUOTES + ' ราย)');

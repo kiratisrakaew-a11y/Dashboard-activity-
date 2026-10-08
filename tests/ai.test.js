@@ -94,7 +94,7 @@ test('prompt อธิบาย SPECIAL และระบุ Method', () => {
 
 test('seed ของชีต Criteria แยกได้เป็นรายการเกณฑ์', () => {
   const seed = G.criteriaSeed_();
-  assert.deepEqual(plain(seed.map(r => r[0] + '|' + r[1])), ['SPECIAL|CONTACT VENDOR', 'SPECIAL|NEGOTIATION', 'SPECIAL|CLOSED']);
+  assert.deepEqual(plain(seed.map(r => r[0] + '|' + r[1])), ['SPECIAL|CONTACT VENDOR', 'SPECIAL|NEGOTIATION', 'SPECIAL|CLOSED', 'NORMAL|CASE', 'SPECIAL|CASE']);
   const closed = G.splitCriteriaCell_(seed[2][2]);
   assert.equal(closed.length, 4);
   assert.ok(closed.every(c => !/ไม่เลือกเจ้าอื่น/.test(c)));
