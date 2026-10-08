@@ -97,6 +97,26 @@ function summarizeSavings_(cases) {
   };
 }
 
+/** เฉลี่ยจำนวน Vendor ต่อ Case (เฉพาะ Case ที่มี Activity) แยก NORMAL / SPECIAL */
+function summarizeVendors_(cases, minQuotes) {
+  var withActs = (cases || []).filter(function (c) { return c.activityCount > 0; });
+  function part(list) {
+    return {
+      cases: list.length,
+      avgContacted: avg_(list.map(function (c) { return c.vendorsContacted; })),
+      avgNegotiated: avg_(list.map(function (c) { return c.vendorsNegotiated; }))
+    };
+  }
+  var out = part(withActs);
+  out.normal = part(withActs.filter(function (c) { return c.method === 'NORMAL'; }));
+  // นับเฉพาะ Case ที่สรุปผลแล้ว (เหมือนตัวกรอง "เทียบราคาน้อยกว่าเกณฑ์") — Case ที่ยังขอราคาอยู่อาจยังติดต่อไม่ครบ
+  out.normal.belowMin = withActs.filter(function (c) {
+    return c.method === 'NORMAL' && c.hasClosedActivity && c.vendorsContacted < minQuotes;
+  }).length;
+  out.special = part(withActs.filter(function (c) { return c.method === 'SPECIAL'; }));
+  return out;
+}
+
 function computeDashboard_(data) {
   var cfg = data.cfg, today = data.today;
   var reviews = data.reviews || {};
@@ -157,10 +177,13 @@ function computeDashboard_(data) {
     var open = c.Status === 'OPEN';
     var lastDay = list.length ? Math.max.apply(null, list.map(function (a) { return a.day || 0; })) : null;
     var firstDay = list.length ? Math.min.apply(null, list.map(function (a) { return a.day === null ? Infinity : a.day; })) : null;
-    var stage = 0, vendorSet = {};
+    var stage = 0, vendorSet = {}, negoSet = {};
     list.forEach(function (a) {
       stage = Math.max(stage, STAGE_RANK[a.type] || 0);
-      if (a.vendorId) vendorSet[a.vendorId] = 1;
+      if (a.vendorId) {
+        vendorSet[a.vendorId] = 1;
+        if (a.type === 'NEGOTIATION' || a.type === 'CLOSED') negoSet[a.vendorId] = 1;
+      }
     });
     // savings: ใช้ผล AI ตรวจทั้ง Case ก่อน ไม่งั้นใช้ Activity ล่าสุดที่ AI ดึงตัวเลขได้ (ให้ CLOSED มาก่อน)
     var cr = (data.caseReviews || {})[c.Case_ID] || null;
@@ -191,6 +214,7 @@ function computeDashboard_(data) {
       firstResponseDays: (firstDay === null || reqDay === null || firstDay === Infinity) ? null : Math.max(0, firstDay - reqDay),
       stage: stage, stageLabel: STAGE_LABEL[stage],
       vendorsContacted: Object.keys(vendorSet).length,
+      vendorsNegotiated: Object.keys(negoSet).length,
       hasClosedActivity: stage === 3,
       stale: open && (lastDay === null ? (reqDay !== null && today - reqDay > cfg.STALE_DAYS) : today - lastDay > cfg.STALE_DAYS),
       avgScore: avg_(scores),
@@ -231,6 +255,7 @@ function computeDashboard_(data) {
       avgFirstResponseDays: avg_(myCases.map(function (c) { return c.firstResponseDays; })),
       savings: round2_(myCases.reduce(function (s, c) { return s + (c.savings ? c.savings.saving : 0); }, 0)),
       nego: summarizeSavings_(myCases),
+      vendorStats: summarizeVendors_(myCases, cfg.MIN_QUOTES),
       closedCases: myCases.filter(function (c) { return c.hasClosedActivity; }).length,
       channels: countBy_(myActs, function (a) { return a.channel; })
     };
@@ -330,6 +355,7 @@ function computeDashboard_(data) {
       byChannel: countBy_(acts, function (a) { return a.channel; })
     },
     nego: teamNego,
+    vendorStats: summarizeVendors_(cases, cfg.MIN_QUOTES),
     funnel: funnel,
     weekly: weekly,
     buyers: buyers,

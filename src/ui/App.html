@@ -261,6 +261,56 @@
         scales: { x: { beginAtZero: true, ticks: { callback: function (v) { return v + '%'; } } } } } });
   }
 
+  // ---------- จำนวน Vendor ต่อ Case ----------
+  var vendorMode = 'normal';
+  function vNum(v) { return v == null ? '–' : fmt(v, 1); }
+  function vendorRow(name, v, email, bold) {
+    var b = bold ? ['<b>', '</b>'] : ['', ''];
+    var low = v.normal.belowMin;
+    return '<tr' + (bold ? ' style="background:var(--surface-2)"' : '') + '><td>' + b[0] + esc(name) + b[1] + '</td>' +
+      '<td class="num">' + fmt(v.cases) + '<div class="small muted">N ' + fmt(v.normal.cases) + ' · S ' + fmt(v.special.cases) + '</div></td>' +
+      '<td class="num">' + b[0] + vNum(v.avgContacted) + b[1] + '</td><td class="num">' + vNum(v.normal.avgContacted) + '</td><td class="num">' + vNum(v.special.avgContacted) + '</td>' +
+      '<td class="num">' + b[0] + vNum(v.avgNegotiated) + b[1] + '</td><td class="num">' + vNum(v.normal.avgNegotiated) + '</td><td class="num">' + vNum(v.special.avgNegotiated) + '</td>' +
+      '<td class="num">' + (low ? '<span class="badge bad clickable"' + (email ? ' data-fewquotes="' + esc(email) + '"' : ' data-fewquotes=""') + '>' + fmt(low) + '</span>' : '0') + '</td></tr>';
+  }
+  function vendorSection() {
+    var list = D.buyers.filter(function (b) { return b.vendorStats && b.vendorStats.cases; })
+      .sort(function (a, b) { return (b.vendorStats.normal.avgContacted || 0) - (a.vendorStats.normal.avgContacted || 0); });
+    var mq = D.settings.MIN_QUOTES;
+    return '<h2>จำนวน Vendor ต่อ Case</h2><div class="card table-wrap"><table><thead>' +
+      '<tr><th rowspan="2">Buyer</th><th class="num" rowspan="2">Case</th><th class="num" colspan="3" style="text-align:center">เฉลี่ย Vendor ที่ติดต่อ / ขอราคา</th>' +
+      '<th class="num" colspan="3" style="text-align:center">เฉลี่ย Vendor ที่เจรจาต่อรอง</th><th class="num" rowspan="2" title="Case NORMAL ที่สรุปผลแล้ว แต่ติดต่อ Vendor น้อยกว่า ' + mq + ' ราย (คลิกเพื่อดูรายการ)">NORMAL<br>ต่ำกว่าเกณฑ์</th></tr>' +
+      '<tr><th class="num">ทั้งหมด</th><th class="num">NORMAL</th><th class="num">SPECIAL</th><th class="num">ทั้งหมด</th><th class="num">NORMAL</th><th class="num">SPECIAL</th></tr></thead><tbody>' +
+      (list.length ? list.map(function (b) { return vendorRow(b.name, b.vendorStats, b.email); }).join('') :
+        '<tr><td colspan="9" class="muted">ยังไม่มีข้อมูล</td></tr>') +
+      (D.vendorStats ? vendorRow('รวมทั้งทีม', D.vendorStats, null, true) : '') +
+      '</tbody></table><p class="small muted">นับ Vendor ไม่ซ้ำต่อ Case จากช่อง Vendor ของ Activity · "เจรจาต่อรอง" = Vendor ใน Activity ประเภท NEGOTIATION/CLOSED · ' +
+      'เฉลี่ยเฉพาะ Case ที่มี Activity · เกณฑ์ NORMAL ควรติดต่ออย่างน้อย ' + mq + ' ราย (ปรับได้ในหน้าตั้งค่า) · "ต่ำกว่าเกณฑ์" นับเฉพาะ Case ที่สรุปผลแล้ว · SPECIAL ใช้ Vendor รายเดียวได้</p></div>' +
+      '<div class="card" style="margin-top:12px"><div class="tl-head"><h3 style="margin:0">เฉลี่ยจำนวน Vendor ต่อ Case ตาม Buyer</h3>' +
+      '<span style="margin-left:auto" class="small">' + ['all', 'normal', 'special'].map(function (m) {
+        return '<button class="btn ' + (m === vendorMode ? '' : 'ghost') + '" data-vmode="' + m + '" style="padding:2px 10px;margin-left:4px">' +
+          { all: 'ทั้งหมด', normal: 'NORMAL', special: 'SPECIAL' }[m] + '</button>';
+      }).join('') + '</span></div><div class="chart-box"><canvas id="chVendorBuyer"></canvas></div>' +
+      '<p class="small muted">แท่งสีน้ำเงิน = Vendor ที่ติดต่อ/ขอราคา · แท่งสีเขียว = Vendor ที่เจรจาต่อรอง · แท่งสีเทา = ค่าทั้งทีม</p></div>';
+  }
+  function renderVendorChart() {
+    function pick(v) { return vendorMode === 'all' ? v : v[vendorMode]; }
+    var rows = D.buyers.filter(function (b) { return b.vendorStats && pick(b.vendorStats).cases; })
+      .map(function (b) { return { name: b.name, v: pick(b.vendorStats), team: false }; })
+      .sort(function (a, b) { return (b.v.avgContacted || 0) - (a.v.avgContacted || 0); });
+    if (D.vendorStats && pick(D.vendorStats).cases) rows.push({ name: 'รวมทั้งทีม', v: pick(D.vendorStats), team: true });
+    var muted = cssVar('--muted');
+    chart('chVendorBuyer', { type: 'bar', data: { labels: rows.map(function (r) { return r.name; }), datasets: [
+      { label: 'Vendor ที่ติดต่อ/ขอราคา', data: rows.map(function (r) { return r.v.avgContacted; }),
+        backgroundColor: rows.map(function (r) { return r.team ? muted : cssVar('--accent'); }), borderRadius: 4 },
+      { label: 'Vendor ที่เจรจาต่อรอง', data: rows.map(function (r) { return r.v.avgNegotiated; }),
+        backgroundColor: rows.map(function (r) { return r.team ? muted : cssVar('--good'); }), borderRadius: 4 }
+    ] }, options: { indexAxis: 'y', maintainAspectRatio: false,
+      plugins: { tooltip: { callbacks: { label: function (ctx) {
+        return ctx.dataset.label + ': เฉลี่ย ' + vNum(ctx.raw) + ' ราย/Case (' + rows[ctx.dataIndex].v.cases + ' Case)'; } } } },
+      scales: { x: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  }
+
   function renderBuyers() {
     var rows = D.buyers.map(function (b) {
       return '<tr class="clickable" data-buyer="' + esc(b.email) + '"><td><b>' + esc(b.name) + '</b><div class="small muted">' + esc(b.email) + '</div></td>' +
@@ -278,7 +328,22 @@
       '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
       '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings (%)</th><th>ช่องทาง</th></tr></thead><tbody>' +
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
-    $('tab-buyers').innerHTML = negoSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
+    $('tab-buyers').innerHTML = negoSection() + vendorSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
+    renderVendorChart();
+    $('tab-buyers').querySelectorAll('[data-vmode]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        vendorMode = btn.dataset.vmode;
+        $('tab-buyers').querySelectorAll('[data-vmode]').forEach(function (x) { x.classList.toggle('ghost', x.dataset.vmode !== vendorMode); });
+        renderVendorChart();
+      });
+    });
+    $('tab-buyers').querySelectorAll('[data-fewquotes]').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        e.stopPropagation();
+        caseFilter.buyer = el.dataset.fewquotes; caseFilter.flag = 'fewQuotes'; caseFilter.status = ''; caseFilter.method = '';
+        renderCases(); showTab('cases');
+      });
+    });
     renderNegoChart('chNegoBuyer');
     renderNegoPctChart('chNegoPctBuyer');
     $('tab-buyers').querySelectorAll('[data-nego-buyer]').forEach(function (tr) {

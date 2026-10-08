@@ -161,3 +161,34 @@ test('Case ที่ต่อรองแล้วแต่ไม่มีรา
   assert.equal(dash2.nego.unmeasured, 0);
   assert.ok(!G.checkDataHealth_(d, dash2).issues.some(i => i.code === 'CASE_NO_PRICE'));
 });
+
+test('summarizeVendors_: เฉลี่ย Vendor ที่ติดต่อ/ต่อรองต่อ Case แยก NORMAL/SPECIAL', () => {
+  const C = (method, contacted, negotiated, acts = 1, closed = true) => ({ method, vendorsContacted: contacted, vendorsNegotiated: negotiated,
+    activityCount: acts, hasClosedActivity: closed });
+  const v = G.summarizeVendors_([C('NORMAL', 4, 2), C('NORMAL', 1, 1), C('SPECIAL', 1, 1), C('NORMAL', 0, 0, 0),
+    C('NORMAL', 1, 0, 1, false)], 3);
+  assert.equal(v.cases, 4);                 // ไม่นับ Case ที่ไม่มี Activity
+  assert.equal(v.avgContacted, 1.8);        // (4+1+1+1)/4
+  assert.equal(v.avgNegotiated, 1);         // (2+1+1+0)/4
+  assert.equal(v.normal.cases, 3);
+  assert.equal(v.normal.avgContacted, 2);   // (4+1+1)/3
+  assert.equal(v.normal.belowMin, 1);       // นับเฉพาะที่สรุปผลแล้ว (ตัวที่ยังขอราคาไม่นับ)
+  assert.equal(v.special.avgContacted, 1);
+  const e = G.summarizeVendors_([], 3);
+  assert.equal(e.cases, 0);
+  assert.equal(e.avgContacted, null);
+});
+
+test('computeDashboard_: vendorStats ราย Buyer และทั้งทีม', () => {
+  const d = fixtures(G);
+  const dash = G.computeDashboard_(d);
+  const c1 = dash.cases.find(c => c.id === 'C1');
+  assert.equal(c1.vendorsContacted, 2);
+  assert.equal(c1.vendorsNegotiated, 2);    // V1 (NEGOTIATION) + V2 (CLOSED)
+  const a = dash.buyers.find(b => b.email === 'a@x.co').vendorStats;
+  assert.equal(a.cases, 1);                 // C3 ไม่มี Activity
+  assert.equal(a.normal.avgContacted, 2);
+  assert.equal(a.normal.belowMin, 1);
+  assert.equal(dash.vendorStats.cases, 2);
+  assert.equal(dash.vendorStats.avgNegotiated, 1);  // C1=2, C2=0
+});
