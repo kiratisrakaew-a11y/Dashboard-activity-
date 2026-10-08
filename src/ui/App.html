@@ -120,6 +120,7 @@
       '<div class="card"><h3>Budget Type</h3><div class="chart-box"><canvas id="chBudget"></canvas></div></div>' +
       '<div class="card"><h3>ช่องทางที่ใช้ติดต่อ</h3><div class="chart-box"><canvas id="chChannel"></canvas></div></div>' +
       '<div class="card clickable" data-goto="buyers"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoOverview"></canvas></div></div>' +
+      '<div class="card clickable" data-goto="buyers"><h3>% ที่ต่อรองลดลงได้ ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoPctOverview"></canvas></div></div>' +
       '</div>';
 
     h += '<h2>Next action ที่เลยกำหนด</h2>' + nextActionTable(D.nextActions.overdue, 'ไม่มีรายการเลยกำหนด 🎉');
@@ -130,6 +131,7 @@
     hbar('chDept', D.breakdown.byDept, function (c) { return c + ' · ' + label('DEPARTMENT', c); });
     hbar('chChannel', D.breakdown.byChannel);
     renderNegoChart('chNegoOverview');
+    renderNegoPctChart('chNegoPctOverview');
     var be = sortedEntries(D.breakdown.byBudget);
     var palette = [cssVar('--accent'), cssVar('--good'), cssVar('--warn'), cssVar('--bad'), cssVar('--muted')];
     chart('chBudget', { type: 'doughnut', data: { labels: be.map(function (x) { return x[0]; }),
@@ -188,7 +190,9 @@
       (D.nego ? negoRow('รวมทั้งทีม', D.nego, D.nego.closedCases, ' style="background:var(--surface-2)"', true) : '') +
       '</tbody></table><p class="small muted">คลิกที่ชื่อเพื่อดูราย Case · % ลดลง = ยอดที่ต่อรองได้ ÷ ราคาตั้งต้นรวม (งานยอดใหญ่มีน้ำหนักมากกว่า) · ' +
       'ตัวเลขดึงจากข้อความด้วย AI นับเฉพาะ Case ที่มีทั้งราคาก่อนและหลังต่อรอง ถ้าตัวเลขไม่ถูก ให้กด "ตรวจทั้ง Case ใหม่" หรือแก้ข้อความใน DB</p></div>' +
-      '<div class="card"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoBuyer"></canvas></div></div></div>' +
+      '<div class="card"><h3>ต่อรองได้ (บาท) ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoBuyer"></canvas></div></div>' +
+      '<div class="card"><h3>% ที่ต่อรองลดลงได้ ตาม Buyer</h3><div class="chart-box"><canvas id="chNegoPctBuyer"></canvas></div>' +
+      '<p class="small muted">% ถ่วงน้ำหนักด้วยยอดเงิน · แท่งสีเทา = ค่ารวมทั้งทีม</p></div></div>' +
       '<div id="negoDetail"></div>' + unmeasuredTable(null);
     return h;
   }
@@ -243,6 +247,20 @@
         scales: { x: { ticks: { callback: function (v) { return fmt(v); } } } } } });
   }
 
+  function renderNegoPctChart(id) {
+    var list = D.buyers.filter(function (b) { return b.nego && b.nego.cases && b.nego.pct != null; })
+      .sort(function (a, b) { return b.nego.pct - a.nego.pct; });
+    var rows = list.map(function (b) { return { name: b.name, n: b.nego, team: false }; });
+    if (D.nego && D.nego.pct != null) rows.push({ name: 'รวมทั้งทีม', n: D.nego, team: true });
+    chart(id, { type: 'bar', data: { labels: rows.map(function (r) { return r.name; }),
+      datasets: [{ data: rows.map(function (r) { return r.n.pct; }),
+        backgroundColor: rows.map(function (r) { return r.team ? cssVar('--muted') : cssVar('--accent'); }), borderRadius: 4 }] },
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: function (ctx) { var n = rows[ctx.dataIndex].n;
+          return 'ลด ' + pctTxt(n.pct) + ' (เฉลี่ยต่อ Case ' + pctTxt(n.avgPct) + ') · ' + baht(n.saving) + ' · ' + n.cases + ' Case'; } } } },
+        scales: { x: { beginAtZero: true, ticks: { callback: function (v) { return v + '%'; } } } } } });
+  }
+
   function renderBuyers() {
     var rows = D.buyers.map(function (b) {
       return '<tr class="clickable" data-buyer="' + esc(b.email) + '"><td><b>' + esc(b.name) + '</b><div class="small muted">' + esc(b.email) + '</div></td>' +
@@ -262,6 +280,7 @@
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
     $('tab-buyers').innerHTML = negoSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
     renderNegoChart('chNegoBuyer');
+    renderNegoPctChart('chNegoPctBuyer');
     $('tab-buyers').querySelectorAll('[data-nego-buyer]').forEach(function (tr) {
       tr.addEventListener('click', function () {
         var box = $('negoDetail');
