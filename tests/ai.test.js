@@ -4,7 +4,9 @@ const G = require('./load')();
 // ค่าที่มาจาก vm context มี prototype คนละ realm → แปลงเป็น plain ก่อนเทียบ
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
+const STORE = { 'SPECIAL|CLOSED': ['Vendor ที่เลือก และเหตุผลที่ใช้ Vendor รายเดียว', 'ราคาสุดท้ายที่ปิด'] };
 const SETTINGS = {
+  HINT_ACTIVITY_CLOSED: '• Vendor ที่เลือก|• เหตุผลที่ไม่เลือกเจ้าอื่น|• ราคาสุดท้ายที่ปิด',
   'HINT_ACTIVITY_CONTACT VENDOR': '• ชื่อ Vendor ที่ติดต่อ|• เรื่องที่ติดต่อ|• Vendor ตอบว่าอย่างไร|• ขั้นตอนต่อไป',
   HINT_ACTIVITY_DEFAULT: '• สรุปสั้นๆ ว่าทำอะไร ได้ผลอย่างไร และขั้นตอนต่อไป',
   REMINDER_HOUR: 8
@@ -62,4 +64,39 @@ test('validateReview_ คำนวณคะแนนเองและเติ�
 
 test('gradeOf_', () => {
   assert.deepEqual(plain([90, 85, 70, 69, 50, 49].map(G.gradeOf_)), ['A', 'A', 'B', 'C', 'C', 'D']);
+});
+
+test('buildCriteria_ แยกตาม Method: Store > DB type > DB DEFAULT', () => {
+  const special = G.buildCriteria_(SETTINGS, 'CLOSED', 'SPECIAL', STORE);
+  assert.equal(special[0], 'Vendor ที่เลือก และเหตุผลที่ใช้ Vendor รายเดียว');
+  assert.ok(!special.includes('เหตุผลที่ไม่เลือกเจ้าอื่น'));
+  assert.equal(special.length, 2 + G.GENERIC_CRITERIA.length);
+  const normal = G.buildCriteria_(SETTINGS, 'CLOSED', 'NORMAL', STORE);
+  assert.ok(normal.includes('เหตุผลที่ไม่เลือกเจ้าอื่น'));                 // NORMAL ใช้ hint เดิมใน DB
+  const fu = G.buildCriteria_(SETTINGS, 'FOLLOW_UP', 'SPECIAL', STORE);
+  assert.equal(fu[0], 'สรุปสั้นๆ ว่าทำอะไร ได้ผลอย่างไร และขั้นตอนต่อไป'); // ไม่มีใน Store → DEFAULT
+  assert.equal(G.criteriaSource_(SETTINGS, 'CLOSED', 'special', STORE).source, 'AI Store (special)');
+});
+
+test('criteriaVersion_ เปลี่ยนเมื่อแก้ชีต Criteria และ fingerprint เปลี่ยนเมื่อ Method เปลี่ยน', () => {
+  const v1 = G.criteriaVersion_(SETTINGS, STORE);
+  assert.notEqual(v1, G.criteriaVersion_(SETTINGS, { 'SPECIAL|CLOSED': ['อื่น'] }));
+  assert.equal(v1, G.criteriaVersion_(SETTINGS, { ...STORE }));
+  const a = { Activity_ID: 'A1', Version: 1, Activity_Type: 'CLOSED', Channel: 'LINE', Activity_Description: 'x', Next_Action: '' };
+  assert.notEqual(G.activityFingerprint_(a, v1, 'NORMAL'), G.activityFingerprint_(a, v1, 'SPECIAL'));
+});
+
+test('prompt อธิบาย SPECIAL และระบุ Method', () => {
+  const p = G.buildPrompt_({ Case_ID: 'C1', Activity_Type: 'CLOSED', Activity_Description: 'x' }, { Method: 'SPECIAL' }, '', ['ก']);
+  assert.match(p.system, /SPECIAL = กรณีพิเศษ/);
+  assert.match(p.user, /Method: SPECIAL/);
+});
+
+test('seed ของชีต Criteria แยกได้เป็นรายการเกณฑ์', () => {
+  const seed = G.criteriaSeed_();
+  assert.deepEqual(plain(seed.map(r => r[0] + '|' + r[1])), ['SPECIAL|CONTACT VENDOR', 'SPECIAL|NEGOTIATION', 'SPECIAL|CLOSED']);
+  const closed = G.splitCriteriaCell_(seed[2][2]);
+  assert.equal(closed.length, 4);
+  assert.ok(closed.every(c => !/ไม่เลือกเจ้าอื่น/.test(c)));
+  assert.deepEqual(plain(G.splitCriteriaCell_('• ก\n- ข | ค')), ['ก', 'ข', 'ค']);
 });

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const FILES = ['Config.gs', 'Util.gs', 'Metrics.gs', 'DataHealth.gs', 'AiReview.gs', 'AiProvider.gs'];
+const FILES = ['Config.gs', 'Util.gs', 'Metrics.gs', 'DataHealth.gs', 'AiReview.gs', 'AiProvider.gs', 'Store.gs'];
 
 module.exports = function load() {
   const ctx = vm.createContext({ console });

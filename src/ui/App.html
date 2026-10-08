@@ -3,7 +3,7 @@
   'use strict';
   var D = null;               // dashboard payload
   var charts = {};
-  var caseFilter = { buyer: '', dept: '', status: 'OPEN', flag: '', q: '' };
+  var caseFilter = { buyer: '', dept: '', method: '', status: 'OPEN', flag: '', q: '' };
 
   // ---------------- helpers ----------------
   function $(id) { return document.getElementById(id); }
@@ -180,6 +180,7 @@
     var f = caseFilter;
     if (f.buyer && c.buyer !== f.buyer) return false;
     if (f.dept && c.dept !== f.dept) return false;
+    if (f.method && c.method !== f.method) return false;
     if (f.status && c.status !== f.status) return false;
     if (f.flag === 'stale' && !c.stale) return false;
     if (f.flag === 'pastRequired' && !c.pastRequired) return false;
@@ -207,6 +208,7 @@
       '<input type="text" id="fQ" placeholder="ค้นหา Case / เรื่อง / ผู้ขอ" value="' + esc(caseFilter.q) + '">' +
       '<select id="fBuyer">' + opts(D.buyers.map(function (b) { return b.email; }), caseFilter.buyer, 'ทุก Buyer', nameOf) + '</select>' +
       '<select id="fDept">' + opts(depts, caseFilter.dept, 'ทุกแผนก', function (d) { return d + ' · ' + label('DEPARTMENT', d); }) + '</select>' +
+      '<select id="fMethod">' + opts(['NORMAL', 'SPECIAL'], caseFilter.method, 'ทุก Method', function (m) { return m + ' · ' + label('METHOD', m); }) + '</select>' +
       '<select id="fStatus">' + opts(statuses, caseFilter.status, 'ทุกสถานะ') + '</select>' +
       '<select id="fFlag">' + Object.keys(FLAGS).map(function (k) { return '<option value="' + k + '"' + (k === caseFilter.flag ? ' selected' : '') + '>' + FLAGS[k] + '</option>'; }).join('') + '</select>' +
       '<span class="muted small">' + list.length + ' รายการ</span></div>';
@@ -230,7 +232,7 @@
       }).join('') + '</tbody></table></div>';
     $('tab-cases').innerHTML = h;
     $('fQ').addEventListener('input', function (e) { caseFilter.q = e.target.value; clearTimeout(renderCases._t); renderCases._t = setTimeout(function () { renderCases(); var q = $('fQ'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }, 250); });
-    [['fBuyer', 'buyer'], ['fDept', 'dept'], ['fStatus', 'status'], ['fFlag', 'flag']].forEach(function (p) {
+    [['fBuyer', 'buyer'], ['fDept', 'dept'], ['fMethod', 'method'], ['fStatus', 'status'], ['fFlag', 'flag']].forEach(function (p) {
       $(p[0]).addEventListener('change', function (e) { caseFilter[p[1]] = e.target.value; renderCases(); });
     });
   }
@@ -261,7 +263,7 @@
     var h = '<div class="kv">' +
       '<div>ผู้ขอ</div><div>' + esc(c.requester) + ' (' + esc(c.dept) + ' · ' + esc(label('DEPARTMENT', c.dept)) + ')</div>' +
       '<div>Buyer</div><div>' + esc(nameOf(c.buyer)) + '</div>' +
-      '<div>วิธี / งบ</div><div>' + esc(c.method) + ' · ' + esc(c.budget) + ' · ' + esc(c.subType) + '</div>' +
+      '<div>วิธี / งบ</div><div><span class="badge ' + (c.method === 'SPECIAL' ? 'warn' : 'info') + '">' + esc(c.method) + ' · ' + esc(label('METHOD', c.method)) + '</span> · ' + esc(c.budget) + ' · ' + esc(c.subType) + '</div>' +
       '<div>สถานะ</div><div>' + esc(c.status) + ' · ' + esc(c.stageLabel) + (c.prNo ? ' · PR ' + esc(c.prNo) : '') + '</div>' +
       '<div>วันที่รับ / ต้องการ</div><div>' + esc(c.requestDate) + ' / ' + esc(c.requiredDate || '–') + '</div>' +
       '<div>อายุ</div><div>' + fmt(c.ageDays) + ' วัน · Activity แรกหลังรับงาน ' + (c.firstResponseDays == null ? '–' : c.firstResponseDays + ' วัน') + '</div>' +
@@ -311,6 +313,10 @@
       kpi('ตรวจแล้ว', fmt(ai.reviewed), 'รอตรวจ ' + fmt(ai.pending) + ' รายการ') +
       kpi('ต่ำกว่าเกณฑ์ (' + th + ')', fmt(ai.lowCount), '', ai.lowCount ? 'bad' : 'good') +
       kpi('ประเภทไม่ตรงเนื้อหา', fmt(ai.typeMismatchCount), '', ai.typeMismatchCount ? 'warn' : 'good') +
+      ['NORMAL', 'SPECIAL'].map(function (m) {
+        var x = ai.byMethod && ai.byMethod[m];
+        return kpi('คะแนน ' + m + ' · ' + label('METHOD', m), x ? fmt(x.avg, 1) : '–', x ? 'ตรวจแล้ว ' + fmt(x.count) + ' รายการ' : 'ยังไม่มีข้อมูล', x ? scoreClass(x.avg) : '');
+      }).join('') +
       '</div>';
     h += '<div class="filters" style="margin-top:12px"><button class="btn" id="btnBatch">ตรวจรายการที่ค้างตอนนี้ (สูงสุด ' + D.settings.BATCH_SIZE + ')</button>' +
       '<span class="small muted">Provider: <b>' + esc(D.settings.AI_PROVIDER) + '</b> · ' + esc(D.settings.AI_MODEL) + ' · ตรวจอัตโนมัติทุกชั่วโมง</span></div>';
@@ -349,10 +355,10 @@
   }
   function actTable(list, empty) {
     if (!list.length) return '<div class="card muted">' + empty + '</div>';
-    return '<div class="card table-wrap"><table><thead><tr><th>Activity</th><th>Case</th><th>ประเภท</th><th>Buyer</th><th>คะแนน</th><th>ข้อความ</th><th>คำแนะนำ</th></tr></thead><tbody>' +
+    return '<div class="card table-wrap"><table><thead><tr><th>Activity</th><th>Case</th><th>ประเภท</th><th>Method</th><th>Buyer</th><th>คะแนน</th><th>ข้อความ</th><th>คำแนะนำ</th></tr></thead><tbody>' +
       list.map(function (a) {
         return '<tr class="clickable" data-case="' + esc(a.caseId) + '"><td>' + esc(a.id) + '</td><td>' + esc(a.caseId) + '</td><td>' + esc(a.type) +
-          (a.typeMismatch ? '<div class="small muted">→ ' + esc(a.suggestedType) + '</div>' : '') + '</td><td>' + esc(nameOf(a.by)) + '</td><td>' +
+          (a.typeMismatch ? '<div class="small muted">→ ' + esc(a.suggestedType) + '</div>' : '') + '</td><td>' + esc(a.method) + '</td><td>' + esc(nameOf(a.by)) + '</td><td>' +
           gradeBadge(a.score, a.grade, a.reviewStale) + '</td><td class="desc small">' + esc(a.desc.length > 160 ? a.desc.slice(0, 160) + '…' : a.desc) +
           '</td><td class="small">' + esc(a.suggestion) + '</td></tr>';
       }).join('') + '</tbody></table></div>';
@@ -402,10 +408,17 @@
       numRow('BATCH_SIZE', 'AI ตรวจต่อรอบ (รายการ)') + '</div></div>' +
       '<div class="filters" style="margin-top:12px"><button class="btn" id="btnSave">บันทึกการตั้งค่า</button>' +
       (s.storeUrl ? '<a class="small" href="' + esc(s.storeUrl) + '" target="_blank" rel="noopener">เปิด AI Store (ไฟล์แยก)</a>' : '') + '</div>';
-    h += '<h2>เกณฑ์ที่ AI ใช้ตรวจ</h2><p class="small muted">มาจาก Config_Settings (HINT_ACTIVITY_*) ใน DB รวมกับเกณฑ์กลาง ถ้าแก้ hint ใน DB ระบบจะตรวจใหม่ให้อัตโนมัติ</p><div class="grid cols-3">' +
-      Object.keys(D.criteria).map(function (t) {
-        return '<div class="card"><h3>' + esc(t) + '</h3><ol class="small">' + D.criteria[t].map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ol></div>';
-      }).join('') + '</div>';
+    h += '<h2>เกณฑ์ที่ AI ใช้ตรวจ</h2><p class="small muted">เลือกเกณฑ์ตามลำดับ: ชีต <b>Criteria</b> ใน AI Store (แยกตาม Method) → hint ใน DB (Config_Settings: HINT_ACTIVITY_*) แล้วต่อท้ายด้วยเกณฑ์กลาง 3 ข้อ ' +
+      'แก้เกณฑ์ SPECIAL/NORMAL ได้ที่ชีต Criteria ' + (s.storeUrl ? '(<a href="' + esc(s.storeUrl) + '" target="_blank" rel="noopener">เปิด AI Store</a>) ' : '') +
+      'เมื่อแก้แล้ว ระบบจะตรวจรายการที่เกี่ยวข้องใหม่ให้อัตโนมัติ</p>';
+    Object.keys(D.criteria).forEach(function (m) {
+      h += '<h2>' + esc(m) + ' · ' + esc(label('METHOD', m)) + '</h2><div class="grid cols-3">' +
+        Object.keys(D.criteria[m]).map(function (t) {
+          var cr = D.criteria[m][t];
+          return '<div class="card"><h3>' + esc(t) + '</h3><div class="small muted">ที่มา: ' + esc(cr.source) + '</div><ol class="small">' +
+            cr.list.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ol></div>';
+        }).join('') + '</div>';
+    });
     $('tab-settings').innerHTML = h;
     $('btnSave').addEventListener('click', function (e) {
       var b = e.target; b.disabled = true;

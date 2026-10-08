@@ -29,12 +29,16 @@ function loadData_() {
   var cases = DbReader.readCases();
   var activities = DbReader.readActivities();
   var settings = DbReader.readSettings();
-  var critVer = criteriaVersion_(settings);
+  var storeCriteria = {};
+  try { storeCriteria = Store.readCriteria(); } catch (e) { console.warn(e.message); }
+  var critVer = criteriaVersion_(settings, storeCriteria);
+  var methodByCase = {};
+  cases.forEach(function (c) { methodByCase[c.Case_ID] = c.Method; });
   var reviews = {};
   try { reviews = Store.readReviews(); } catch (e) { console.warn(e.message); }
   activities.forEach(function (a) {
     var r = reviews[a.Activity_ID];
-    if (r) r.stale = r.hash !== activityFingerprint_(a, critVer);
+    if (r) r.stale = r.hash !== activityFingerprint_(a, critVer, methodByCase[a.Case_ID]);
   });
   // ส่งเฉพาะ vendor ที่ถูกอ้างถึง
   var allVendors = DbReader.readVendorsMap();
@@ -42,7 +46,7 @@ function loadData_() {
   activities.forEach(function (a) { if (a.Vendor_ID && allVendors[a.Vendor_ID]) vendors[a.Vendor_ID] = allVendors[a.Vendor_ID]; });
   return {
     cfg: cfg, cases: cases, activities: activities, users: DbReader.readUsers(),
-    vendors: vendors, reviews: reviews, settings: settings, today: dayNum_(new Date())
+    vendors: vendors, reviews: reviews, settings: settings, storeCriteria: storeCriteria, today: dayNum_(new Date())
   };
 }
 
@@ -55,7 +59,13 @@ function apiGetDashboard() {
   dash.meta = DbReader.readMeta();
   dash.lists = DbReader.readLists();
   dash.criteria = {};
-  ACTIVITY_TYPES.forEach(function (t) { dash.criteria[t] = buildCriteria_(data.settings, t); });
+  METHODS.forEach(function (m) {
+    dash.criteria[m] = {};
+    ACTIVITY_TYPES.forEach(function (t) {
+      var src = criteriaSource_(data.settings, t, m, data.storeCriteria);
+      dash.criteria[m][t] = { source: src.source, list: src.list.concat(GENERIC_CRITERIA) };
+    });
+  });
   dash.settings = publicSettings_(data.cfg);
   try { dash.runs = Store.readRuns(5); } catch (e) { dash.runs = []; }
   dash.user = { email: user.Email, name: user.Name };

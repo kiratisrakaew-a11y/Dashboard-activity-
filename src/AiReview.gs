@@ -62,22 +62,44 @@ function splitHint_(s) {
     .filter(function (x) { return x; });
 }
 
-/** เกณฑ์ของ Activity_Type นี้ (hint เฉพาะประเภท หรือ DEFAULT) + เกณฑ์กลาง */
-function buildCriteria_(settings, type) {
+var METHODS = ['NORMAL', 'SPECIAL'];
+
+/** แยกเกณฑ์จากชีต Criteria: รับได้ทั้งขึ้นบรรทัดใหม่และ | */
+function splitCriteriaCell_(s) {
+  return splitHint_(String(s || '').replace(/\r?\n/g, '|'));
+}
+
+/**
+ * เลือกชุดเกณฑ์ (ยังไม่รวมเกณฑ์กลาง) ตามลำดับ:
+ *   1) ชีต Criteria ใน AI Store ที่ตรง Method + Type
+ *   2) DB: HINT_ACTIVITY_<TYPE>
+ *   3) DB: HINT_ACTIVITY_DEFAULT
+ */
+function criteriaSource_(settings, type, method, storeCriteria) {
+  var own = storeCriteria && storeCriteria[String(method || '').toUpperCase() + '|' + type];
+  if (own && own.length) return { list: own.slice(), source: 'AI Store (' + method + ')' };
   var specific = settings['HINT_ACTIVITY_' + type];
-  var list = splitHint_(specific !== undefined && specific !== '' ? specific : settings.HINT_ACTIVITY_DEFAULT);
-  return list.concat(GENERIC_CRITERIA);
+  if (specific !== undefined && specific !== '') return { list: splitHint_(specific), source: 'DB: HINT_ACTIVITY_' + type };
+  return { list: splitHint_(settings.HINT_ACTIVITY_DEFAULT), source: 'DB: HINT_ACTIVITY_DEFAULT' };
 }
 
-function criteriaVersion_(settings) {
+/** เกณฑ์ทั้งหมดของ Activity นี้ = ชุดตาม Method/Type + เกณฑ์กลาง */
+function buildCriteria_(settings, type, method, storeCriteria) {
+  return criteriaSource_(settings, type, method, storeCriteria).list.concat(GENERIC_CRITERIA);
+}
+
+function criteriaVersion_(settings, storeCriteria) {
   var keys = Object.keys(settings).filter(function (k) { return k.indexOf('HINT_ACTIVITY_') === 0; }).sort();
-  return fnv1a_(PROMPT_VERSION + JSON.stringify(keys.map(function (k) { return [k, settings[k]]; })) + JSON.stringify(GENERIC_CRITERIA));
+  var sc = storeCriteria || {};
+  var scKeys = Object.keys(sc).sort();
+  return fnv1a_(PROMPT_VERSION + JSON.stringify(keys.map(function (k) { return [k, settings[k]]; })) +
+    JSON.stringify(scKeys.map(function (k) { return [k, sc[k]]; })) + JSON.stringify(GENERIC_CRITERIA));
 }
 
-/** fingerprint ของ Activity: เปลี่ยนเมื่อเนื้อหา/Version/เกณฑ์เปลี่ยน → ต้องตรวจใหม่ */
-function activityFingerprint_(a, critVer) {
+/** fingerprint ของ Activity: เปลี่ยนเมื่อเนื้อหา/Version/เกณฑ์/Method ของ Case เปลี่ยน → ต้องตรวจใหม่ */
+function activityFingerprint_(a, critVer, method) {
   return fnv1a_([a.Activity_ID, a.Version, a.Activity_Type, a.Channel, a.Activity_Description,
-    a.Next_Action, critVer].join('␟'));
+    a.Next_Action, critVer, method || ''].join('\u241F'));
 }
 
 function buildPrompt_(a, caseRow, vendorName, criteria) {
@@ -90,6 +112,9 @@ function buildPrompt_(a, caseRow, vendorName, criteria) {
     '- result = "yes" ถ้าระบุชัดเจน, "partial" ถ้ากล่าวถึงแต่ไม่ครบ/คลุมเครือ, "no" ถ้าไม่มีเลย',
     '- ตัดสินจากข้อความที่ให้เท่านั้น ห้ามเดาข้อมูลที่ไม่ได้เขียน',
     '- ข้อมูล Next_Action ที่กรอกแยกช่องนับเป็น "ขั้นตอนต่อไป" ได้',
+    '- Method ของ Case: NORMAL = จัดซื้อปกติ ต้องเทียบราคาหลาย Vendor;',
+    '  SPECIAL = กรณีพิเศษ เลือก Vendor รายเดียวโดยไม่ต้องมีคู่เทียบ — ห้ามหักคะแนนหรือแนะนำให้หาคู่เทียบเพิ่มในงาน SPECIAL',
+    '  แต่ควรมีเหตุผลที่ใช้ Vendor รายเดียว และราคาอ้างอิง (ราคาเดิม/PO เก่า/ราคาประมาณการ/historical price) ตามเกณฑ์ที่ให้',
     '- comment และ suggestion เขียนเป็นภาษาไทย สั้น กระชับ สุภาพ เชิงโค้ช',
     '- improved_example: ตัวอย่างการเขียนใหม่ 1-4 บรรทัดโดยใช้ข้อมูลเดิม ใส่ [ ] ตรงข้อมูลที่ขาด',
     '- type_mismatch = true เมื่อเนื้อหาไม่ตรงกับ Activity_Type ที่เลือก และระบุ suggested_type ที่เหมาะสม',
@@ -111,7 +136,7 @@ function buildPrompt_(a, caseRow, vendorName, criteria) {
     Next_Action_Date: a.Next_Action_Date || ''
   };
   var user = [
-    'เกณฑ์สำหรับ Activity ประเภท ' + a.Activity_Type + ':',
+    'เกณฑ์สำหรับ Activity ประเภท ' + a.Activity_Type + ' (Method: ' + (ctx.Method || '-') + '):',
     criteria.map(function (c, i) { return (i + 1) + '. ' + c; }).join('\n'),
     '',
     '<activity>',
@@ -175,26 +200,30 @@ function validateReview_(obj, criteria) {
 
 function loadReviewContext_() {
   var settings = DbReader.readSettings();
+  var storeCriteria = Store.readCriteria();
   var cases = {};
   DbReader.readCases().forEach(function (c) { cases[c.Case_ID] = c; });
   return {
     cfg: getConfig_(),
     settings: settings,
-    critVer: criteriaVersion_(settings),
+    storeCriteria: storeCriteria,
+    critVer: criteriaVersion_(settings, storeCriteria),
     cases: cases,
     vendors: DbReader.readVendorsMap()
   };
 }
 
 function reviewOne_(a, ctx) {
-  var criteria = buildCriteria_(ctx.settings, a.Activity_Type);
+  var caseRow = ctx.cases[a.Case_ID];
+  var method = caseRow ? caseRow.Method : '';
+  var criteria = buildCriteria_(ctx.settings, a.Activity_Type, method, ctx.storeCriteria);
   var v = ctx.vendors[a.Vendor_ID];
-  var p = buildPrompt_(a, ctx.cases[a.Case_ID], v ? v.name : '', criteria);
+  var p = buildPrompt_(a, caseRow, v ? v.name : '', criteria);
   var res = AiProvider.callJson({ system: p.system, user: p.user, schema: REVIEW_SCHEMA, schemaName: 'activity_review' }, ctx.cfg);
   var review = validateReview_(res.data, criteria);
   review.activity_id = a.Activity_ID;
   review.activity_version = a.Version;
-  review.hash = activityFingerprint_(a, ctx.critVer);
+  review.hash = activityFingerprint_(a, ctx.critVer, method);
   review.provider = res.provider;
   review.model = res.model;
   review.tokens_in = res.usage.input;
@@ -204,10 +233,10 @@ function reviewOne_(a, ctx) {
 }
 
 /** รายการ Activity ที่ยังไม่ถูกตรวจ หรือเนื้อหา/เกณฑ์เปลี่ยนไปแล้ว (ใหม่สุดก่อน) */
-function pendingActivities_(acts, reviews, critVer) {
+function pendingActivities_(acts, reviews, critVer, methodByCase) {
   return acts.filter(function (a) {
     var r = reviews[a.Activity_ID];
-    return !r || r.hash !== activityFingerprint_(a, critVer);
+    return !r || r.hash !== activityFingerprint_(a, critVer, methodByCase[a.Case_ID]);
   }).sort(function (x, y) { return String(y.Updated_At || y.Activity_Date).localeCompare(String(x.Updated_At || x.Activity_Date)); });
 }
 
@@ -222,7 +251,9 @@ function runAiBatch() {
     run.provider = ctx.cfg.AI_PROVIDER;
     run.model = ctx.cfg.AI_MODEL;
     var reviews = Store.readReviews();
-    var pending = pendingActivities_(DbReader.readActivities(), reviews, ctx.critVer);
+    var methodByCase = {};
+    Object.keys(ctx.cases).forEach(function (id) { methodByCase[id] = ctx.cases[id].Method; });
+    var pending = pendingActivities_(DbReader.readActivities(), reviews, ctx.critVer, methodByCase);
     run.pending = pending.length;
     var buf = [], consecutiveErr = 0, errMsgs = [];
     for (var i = 0; i < pending.length && i < ctx.cfg.BATCH_SIZE; i++) {

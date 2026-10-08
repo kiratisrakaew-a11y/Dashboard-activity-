@@ -62,9 +62,20 @@ test('checkDataHealth_ เจอปัญหาที่คาดไว้', () 
   assert.deepEqual(plain(codes), [
     'ACT_FORGOT_DONE:A1', 'ACT_FORGOT_DONE:A2', 'ACT_NO_CHANNEL:A2', 'ACT_SHORT_DESC:A1',
     'ACT_TYPE_MISMATCH:A3', 'ACT_UNKNOWN_VENDOR:A4', 'ACT_VENDOR_BLACKLIST:A3',
-    'CASE_CLOSED_ACTIVITY_STILL_OPEN:C1', 'CASE_INTAKE_INCOMPLETE:C2', 'CASE_NO_ACTIVITY:C3',
+    'CASE_CLOSED_ACTIVITY_STILL_OPEN:C1', 'CASE_FEW_QUOTES:C1', 'CASE_INTAKE_INCOMPLETE:C2', 'CASE_NO_ACTIVITY:C3',
     'CASE_REQUIRED_BEFORE_REQUEST:C1'
   ]);
   assert.equal(h.issues[0].severity, 'high');
   assert.equal(h.issues.find(i => i.code === 'ACT_NO_CHANNEL').row, 3);
+});
+
+test('SPECIAL ไม่ถูกตรวจเรื่องจำนวนคู่เทียบ และมีคะแนนแยกตาม Method', () => {
+  const d = fixtures(G);
+  d.cases[0].Method = 'SPECIAL';                    // C1 เลือก Vendor รายเดียวได้
+  const dash = G.computeDashboard_(d);
+  const h = G.checkDataHealth_(d, dash);
+  assert.equal(h.issues.filter(i => i.code === 'CASE_FEW_QUOTES').length, 0);
+  assert.equal(dash.overview.fewQuotes, 0);
+  assert.deepEqual(plain(dash.ai.byMethod), { SPECIAL: { avg: 70, count: 2 } });
+  assert.equal(dash.activities.find(a => a.id === 'A1').method, 'SPECIAL');
 });

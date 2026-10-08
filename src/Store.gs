@@ -8,8 +8,36 @@ var STORE_SHEETS = {
     'Criteria_JSON', 'Missing', 'Suggestion', 'Improved_Example', 'Type_Mismatch', 'Suggested_Type',
     'Extracted_JSON', 'Tokens_In', 'Tokens_Out', 'Reviewed_At'],
   AI_Runs: ['Started_At', 'Finished_At', 'Provider', 'Model', 'Pending', 'Reviewed', 'Errors', 'Message'],
-  Settings: ['Key', 'Value', 'Description']
+  Settings: ['Key', 'Value', 'Description'],
+  Criteria: ['Method', 'Activity_Type', 'Criteria', 'Is_Active', 'Note']
 };
+
+/** เกณฑ์ตั้งต้นของงาน SPECIAL (เลือก Vendor รายเดียว ไม่ต้องมีคู่เทียบ) — 1 เกณฑ์ต่อบรรทัด */
+function criteriaSeed_() {
+  var note = 'SPECIAL ไม่ต้องมีคู่เทียบ — แก้ได้ (1 เกณฑ์ต่อบรรทัด) ลบแถว/ตั้ง Is_Active=FALSE เพื่อกลับไปใช้ hint ใน DB';
+  return [
+    ['SPECIAL', 'CONTACT VENDOR', [
+      'ชื่อ Vendor ที่ติดต่อ',
+      'เรื่องที่ติดต่อ',
+      'เหตุผลที่ใช้ Vendor รายเดียว (ผู้ให้บริการรายเดียว / ต่อสัญญาเดิม / งานเร่งด่วน / ผู้ขอระบุ)',
+      'Vendor ตอบว่าอย่างไร',
+      'ขั้นตอนต่อไป'
+    ].join('\n'), true, note],
+    ['SPECIAL', 'NEGOTIATION', [
+      'ชื่อ Vendor ที่ติดต่อ',
+      'ราคาตั้งต้น vs ราคาที่ต่อรองได้',
+      'ราคาอ้างอิงที่ใช้เทียบ (ราคาเดิม / PO เก่า / ราคาประมาณการ / historical price)',
+      'Vendor ยอมอะไรเพิ่ม (เครดิตเทอม/ของแถม/ส่วนลด)',
+      'ขั้นตอนต่อไป'
+    ].join('\n'), true, note],
+    ['SPECIAL', 'CLOSED', [
+      'Vendor ที่เลือก และเหตุผลที่ใช้ Vendor รายเดียว',
+      'ราคาอ้างอิงที่ยืนยันว่าราคาเหมาะสม (ราคาเดิม / PO เก่า / ราคาประมาณการ / historical price)',
+      'ราคาสุดท้ายที่ปิด',
+      'ส่วนต่างจาก Budget / ราคาอ้างอิง (Savings)'
+    ].join('\n'), true, note]
+  ];
+}
 
 function settingsSeed_() {
   return [
@@ -137,6 +165,39 @@ var Store = (function () {
       run.pending, run.reviewed, run.errors, run.message || '']);
   }
 
+  function ensureCriteriaSheet_(ss) {
+    var sh = ss.getSheetByName('Criteria');
+    if (sh) return sh;
+    sh = ss.insertSheet('Criteria');
+    var h = STORE_SHEETS.Criteria;
+    sh.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    var seed = criteriaSeed_();
+    sh.getRange(2, 1, seed.length, h.length).setValues(seed);
+    sh.getRange(2, 3, seed.length, 1).setWrap(true);
+    return sh;
+  }
+
+  /** ชีต Criteria → { 'SPECIAL|CLOSED': ['เกณฑ์1', ...] } (สร้างชีต + seed ให้ถ้ายังไม่มี) */
+  function readCriteria() {
+    var cache = CacheService.getScriptCache();
+    var hit = cache.get('store:criteria');
+    if (hit) return JSON.parse(hit);
+    var sh = ensureCriteriaSheet_(open_());
+    var map = {};
+    var last = sh.getLastRow();
+    if (last > 1) {
+      sh.getRange(2, 1, last - 1, 4).getValues().forEach(function (r) {
+        var method = String(r[0]).trim().toUpperCase(), type = String(r[1]).trim().toUpperCase();
+        if (!method || !type || r[3] === false || String(r[3]).toUpperCase() === 'FALSE') return;
+        var list = splitCriteriaCell_(r[2]);
+        if (list.length) map[method + '|' + type] = list;
+      });
+    }
+    cache.put('store:criteria', JSON.stringify(map), 60);
+    return map;
+  }
+
   function readRuns(limit) {
     var sh = sheet_('AI_Runs');
     var last = sh.getLastRow();
@@ -162,6 +223,10 @@ var Store = (function () {
       sh.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold');
       sh.setFrozenRows(1);
     });
+    if (ss.getSheetByName('Criteria').getLastRow() < 2) {
+      var cs = criteriaSeed_();
+      ss.getSheetByName('Criteria').getRange(2, 1, cs.length, cs[0].length).setValues(cs);
+    }
     var st = ss.getSheetByName('Settings');
     if (st.getLastRow() < 2) {
       var seed = settingsSeed_();
@@ -179,6 +244,7 @@ var Store = (function () {
     upsertReviews: upsertReviews,
     logRun: logRun,
     readRuns: readRuns,
+    readCriteria: readCriteria,
     ensure: ensure
   };
 })();

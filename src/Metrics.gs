@@ -34,6 +34,8 @@ function computeDashboard_(data) {
   (data.users || []).forEach(function (u) { usersByEmail[lower_(u.Email)] = u; });
 
   // ---------- Activities ----------
+  var methodByCase = {};
+  data.cases.forEach(function (c) { methodByCase[c.Case_ID] = c.Method || ''; });
   var actsByCase = {};
   var acts = data.activities.map(function (a) {
     var r = reviews[a.Activity_ID] || null;
@@ -41,7 +43,7 @@ function computeDashboard_(data) {
     var item = {
       id: a.Activity_ID, row: a._row, caseId: a.Case_ID, vendorId: a.Vendor_ID || '',
       vendorName: v ? v.name : '', vendorStatus: v ? v.status : '',
-      type: a.Activity_Type || '', channel: a.Channel || '',
+      type: a.Activity_Type || '', channel: a.Channel || '', method: methodByCase[a.Case_ID] || '',
       date: a.Activity_Date, day: dayNum_(a.Activity_Date),
       by: lower_(a.Performed_By), desc: String(a.Activity_Description || ''),
       nextAction: a.Next_Action || '', nextDate: a.Next_Action_Date || '', nextDay: dayNum_(a.Next_Action_Date),
@@ -169,11 +171,15 @@ function computeDashboard_(data) {
   var byType = {};
   reviewedActs.forEach(function (a) { (byType[a.type] = byType[a.type] || []).push(a.score); });
   Object.keys(byType).forEach(function (k) { byType[k] = avg_(byType[k]); });
+  var byMethod = {};
+  reviewedActs.forEach(function (a) { (byMethod[a.method || '(ว่าง)'] = byMethod[a.method || '(ว่าง)'] || []).push(a.score); });
+  Object.keys(byMethod).forEach(function (k) { byMethod[k] = { avg: avg_(byMethod[k]), count: byMethod[k].length }; });
   var aiSummary = {
     reviewed: reviewedActs.length,
     pending: acts.length - reviewedActs.length,
     avgScore: avg_(reviewedActs.map(function (a) { return a.score; })),
     byType: byType,
+    byMethod: byMethod,
     gradeDist: countBy_(reviewedActs, function (a) { return a.grade; }),
     lowCount: reviewedActs.filter(function (a) { return a.score < cfg.SCORE_THRESHOLD; }).length,
     typeMismatchCount: reviewedActs.filter(function (a) { return a.typeMismatch; }).length
