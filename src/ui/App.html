@@ -1077,7 +1077,7 @@
   var SC_PARTS = [
     { k: 'write', label: 'คุณภาพการเขียน', hint: 'คะแนน AI เฉลี่ยราย Activity' },
     { k: 'case', label: 'คุณภาพทั้ง Case', hint: 'คะแนน AI เฉลี่ยตอนตรวจทั้ง Case' },
-    { k: 'nego', label: 'ต่อรองราคา', hint: '% ลดลงถ่วงน้ำหนัก เทียบเป้า 10% = 100 คะแนน' },
+    { k: 'nego', label: 'ต่อรองราคา', hint: '% ลดลงถ่วงน้ำหนัก ÷ % ของคนที่ทำได้สูงสุดในทีม × 100 (สูงสุดในทีม = 100)' },
     { k: 'quote', label: 'ขอราคาครบ (NORMAL)', hint: '% Case NORMAL ที่ขอราคาครบตามเกณฑ์' },
     { k: 'nextaction', label: 'Next action ตรงเวลา', hint: '% Next action ที่ครบกำหนดแล้วและไม่ค้าง' },
     { k: 'speed', label: 'ความเร็วปิด Case', hint: 'เวลาเฉลี่ยของทีม ÷ เวลาเฉลี่ยของคนนี้ × 100 (เร็วกว่าหรือเท่าทีม = 100)' },
@@ -1101,6 +1101,9 @@
     var teamDur = mean(D.cases.filter(function (c) { return c.duration && !c.duration.ongoing && c.duration.measurable; })
       .map(function (c) { return c.duration.workMinutes; }));
     var clamp = function (x) { return Math.max(0, Math.min(100, x)); };
+    // ต่อรองราคา: เทียบกับคนที่ % ลดลงสูงสุดในทีม (คนนั้นได้ 100)
+    var bestNego = Math.max.apply(null, [0].concat(D.buyers.map(function (b) { return b.nego && b.nego.pct != null ? b.nego.pct : 0; })));
+    buyerPerf.bestNego = bestNego;
     var out = {};
     D.buyers.forEach(function (b) {
       var cs = D.cases.filter(function (c) { return c.buyer === b.email; });
@@ -1125,7 +1128,7 @@
       p.parts = {
         write: b.avgScore,
         case: p.caseScore,
-        nego: p.negoPct != null ? clamp(p.negoPct / 10 * 100) : null,
+        nego: p.negoPct != null && bestNego > 0 ? clamp(p.negoPct / bestNego * 100) : null,
         quote: p.quotePct,
         nextaction: p.naPct,
         speed: p.avgDur != null && teamDur ? clamp(teamDur / Math.max(p.avgDur, 1) * 100) : null,
@@ -1194,7 +1197,7 @@
     var raw = {
       write: p.parts.write == null ? 'ยังไม่มีที่ตรวจแล้ว' : fmt(p.parts.write, 1),
       case: p.caseScore == null ? 'ยังไม่มีที่ตรวจทั้ง Case' : fmt(p.caseScore, 1) + ' (' + p.reviewedCases.length + ' Case)',
-      nego: p.negoPct == null ? 'ยังไม่มีตัวเลขราคา' : fmt(p.negoPct, 2) + '%',
+      nego: p.negoPct == null ? 'ยังไม่มีตัวเลขราคา' : fmt(p.negoPct, 2) + '% (สูงสุดในทีม ' + fmt(buyerPerf.bestNego, 2) + '%)',
       quote: p.quotePct == null ? 'ไม่มีงาน NORMAL' : fmt(p.quotePct, 0) + '% (' + p.normalCases.length + ' Case)',
       nextaction: p.naPct == null ? 'ยังไม่มีที่ครบกำหนด' : fmt(p.naPct, 0) + '% (ค้าง ' + p.naOverdue + ' จาก ' + p.naDue + ')',
       speed: p.avgDur == null ? 'ยังไม่มี Case ที่ปิด' : fmtDur(p.avgDur) + ' / Case',
