@@ -436,7 +436,8 @@
   }
   function reopenDrill() {
     var d = lastDrill; if (!d) return;
-    if (d.nego !== undefined) drillNego(d.nego);
+    if (d.custom) d.custom();
+    else if (d.nego !== undefined) drillNego(d.nego);
     else drill(d.title, d.rows, d.kind, d.filter, d.keepOrder, d.opts);
   }
 
@@ -1072,7 +1073,149 @@
     var cs = D.cases.filter(function (c) { return c.buyer === email && c.activityCount > 0; });
     return cs.length ? fmt(cs.reduce(function (s, c) { return s + c.activityCount; }, 0) / cs.length, 1) : '–';
   }
+  // ---------- Performance & Scorecard ของ Buyer ----------
+  var SC_PARTS = [
+    { k: 'write', label: 'คุณภาพการเขียน', hint: 'คะแนน AI เฉลี่ยราย Activity' },
+    { k: 'case', label: 'คุณภาพทั้ง Case', hint: 'คะแนน AI เฉลี่ยตอนตรวจทั้ง Case' },
+    { k: 'nego', label: 'ต่อรองราคา', hint: '% ลดลงถ่วงน้ำหนัก เทียบเป้า 10% = 100 คะแนน' },
+    { k: 'quote', label: 'ขอราคาครบ (NORMAL)', hint: '% Case NORMAL ที่ขอราคาครบตามเกณฑ์' },
+    { k: 'nextaction', label: 'Next action ตรงเวลา', hint: '% Next action ที่ครบกำหนดแล้วและไม่ค้าง' },
+    { k: 'speed', label: 'ความเร็วปิด Case', hint: 'เวลาเฉลี่ยของทีม ÷ เวลาเฉลี่ยของคนนี้ × 100 (เร็วกว่าหรือเท่าทีม = 100)' },
+    { k: 'data', label: 'คุณภาพข้อมูล', hint: '100 − แต้มปัญหา Data Health ต่อ Case (สูง 30, กลาง 15, ต่ำ 5)' }
+  ];
+  function scWeights() {
+    var w = {};
+    SC_PARTS.forEach(function (p) { w[p.k] = 1; });
+    String(D.settings.SCORECARD_WEIGHTS || '').split(',').forEach(function (x) {
+      var m = /^\s*(\w+)\s*:\s*([\d.]+)\s*$/.exec(x); if (m && m[1] in w) w[m[1]] = Number(m[2]);
+    });
+    return w;
+  }
+  function mean(xs) { return xs.length ? xs.reduce(function (s, x) { return s + x; }, 0) / xs.length : null; }
+  /** ตัวชี้วัดรายคน (คำนวณจากข้อมูลที่โหลดมาแล้ว) */
+  function buyerPerf() {
+    if (buyerPerf._d === D) return buyerPerf._v;
+    var today = dayOf(D.today), mq = D.settings.MIN_QUOTES, w = scWeights();
+    var caseBuyer = {};
+    D.cases.forEach(function (c) { caseBuyer[c.id] = c.buyer; });
+    var teamDur = mean(D.cases.filter(function (c) { return c.duration && !c.duration.ongoing && c.duration.measurable; })
+      .map(function (c) { return c.duration.workMinutes; }));
+    var clamp = function (x) { return Math.max(0, Math.min(100, x)); };
+    var out = {};
+    D.buyers.forEach(function (b) {
+      var cs = D.cases.filter(function (c) { return c.buyer === b.email; });
+      var closedDur = cs.filter(function (c) { return c.duration && !c.duration.ongoing && c.duration.measurable; });
+      var reviewedCases = cs.filter(function (c) { return c.caseReview; });
+      var normal = cs.filter(function (c) { return c.method === 'NORMAL' && c.activityCount > 0; });
+      var due = D.activities.filter(function (a) { return a.by === b.email && a.nextDay != null && a.nextDay < today; });
+      var overdue = D.nextActions.overdue.filter(function (o) { return o.by === b.email; }).length;
+      var issues = D.health.issues.filter(function (i) { return i.caseId && caseBuyer[i.caseId] === b.email; });
+      var sev = { high: 0, medium: 0, low: 0 };
+      issues.forEach(function (i) { sev[i.severity]++; });
+      var p = {
+        email: b.email, name: b.name, cases: cs.length, negoPct: b.nego ? b.nego.pct : null,
+        avgDur: mean(closedDur.map(function (c) { return c.duration.workMinutes; })), durCases: closedDur,
+        value: cs.reduce(function (s, c) { return s + (c.value ? c.value.value : 0); }, 0), valueCases: cs.filter(function (c) { return c.value; }),
+        caseScore: mean(reviewedCases.map(function (c) { return c.caseReview.score; })), reviewedCases: reviewedCases,
+        quotePct: normal.length ? normal.filter(function (c) { return c.vendorsContacted >= mq; }).length / normal.length * 100 : null, normalCases: normal,
+        naDue: due.length, naOverdue: overdue, naPct: due.length ? Math.max(0, due.length - overdue) / due.length * 100 : null,
+        issues: issues, sev: sev
+      };
+      // คะแนนแต่ละด้าน 0–100 (null = ไม่มีข้อมูล → ไม่นับด้านนั้น)
+      p.parts = {
+        write: b.avgScore,
+        case: p.caseScore,
+        nego: p.negoPct != null ? clamp(p.negoPct / 10 * 100) : null,
+        quote: p.quotePct,
+        nextaction: p.naPct,
+        speed: p.avgDur != null && teamDur ? clamp(teamDur / Math.max(p.avgDur, 1) * 100) : null,
+        data: cs.length ? clamp(100 - (sev.high * 30 + sev.medium * 15 + sev.low * 5) / cs.length) : null
+      };
+      var sw = 0, sum = 0;
+      SC_PARTS.forEach(function (x) { var v = p.parts[x.k]; if (v != null && w[x.k] > 0) { sw += w[x.k]; sum += v * w[x.k]; } });
+      p.weightUsed = sw;
+      p.total = cs.length && sw ? Math.round(sum / sw * 10) / 10 : null;
+      out[b.email] = p;
+    });
+    buyerPerf._d = D; buyerPerf._v = out;
+    return out;
+  }
+  function healthBadges(sev) {
+    if (!(sev.high + sev.medium + sev.low)) return '0';
+    return (sev.high ? '<span class="badge bad">' + sev.high + '</span> ' : '') + (sev.medium ? '<span class="badge warn">' + sev.medium + '</span> ' : '') +
+      (sev.low ? '<span class="badge">' + sev.low + '</span>' : '');
+  }
+  function perfCells(p) {
+    return '<td class="num">' + (p.avgDur == null ? '–' : fmtDur(p.avgDur)) + '</td>' +
+      '<td class="num">' + (p.valueCases.length ? baht(Math.round(p.value)) + '<div class="small muted">' + p.valueCases.length + ' Case</div>' : '–') + '</td>' +
+      '<td class="num">' + (p.caseScore == null ? '–' : '<span class="badge ' + scoreClass(p.caseScore) + '">' + fmt(p.caseScore, 1) + '</span>') + '</td>' +
+      '<td class="num">' + (p.quotePct == null ? '–' : fmt(p.quotePct, 0) + '%') + '</td>' +
+      '<td class="num">' + (p.naPct == null ? '–' : fmt(p.naPct, 0) + '%') + '</td>' +
+      '<td class="num">' + healthBadges(p.sev) + '</td>' +
+      '<td class="num">' + (p.total == null ? '–' : '<span class="badge ' + scoreClass(p.total) + '"><b>' + fmt(p.total, 1) + '</b></span>') + '</td>';
+  }
+  function scorecardSection() {
+    return '<h2 style="margin-top:0">Scorecard ของ Buyer (คะแนนรวม 100)</h2><div class="grid cols-2">' +
+      '<div class="card"><h3>อันดับคะแนนรวม</h3><div class="chart-box" id="scBox"><canvas id="chScore"></canvas></div>' +
+      '<p class="small muted">👆 คลิกที่แท่งหรือชื่อเพื่อดูว่าคะแนนมาจากไหน · ด้านที่ไม่มีข้อมูลจะไม่ถูกนับ (น้ำหนักที่เหลือปรับเป็นสัดส่วนเอง) · ปรับน้ำหนักได้ในหน้าตั้งค่า</p></div>' +
+      '<div class="card"><h3>เทียบแต่ละด้าน (0–100)</h3><div class="chart-box" style="height:320px"><canvas id="chRadar"></canvas></div></div></div>';
+  }
+  function renderScorecard() {
+    var perf = buyerPerf();
+    var rows = Object.keys(perf).map(function (k) { return perf[k]; }).filter(function (p) { return p.total != null; })
+      .sort(function (a, b) { return b.total - a.total; });
+    $('scBox').style.height = Math.max(160, rows.length * 46 + 50) + 'px';
+    if (!rows.length) { $('scBox').innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ยังไม่มีข้อมูล</div>'; return; }
+    var lbl = { id: 'scLabel', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx; ctx.save(); ctx.font = '600 12px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle'; ctx.fillStyle = cssVar('--text');
+      ch.getDatasetMeta(0).data.forEach(function (el, i) { ctx.fillText(fmt(rows[i].total, 1), el.x + 6, el.y); }); ctx.restore();
+    } };
+    chart('chScore', pickable({ type: 'bar', plugins: [lbl], data: { labels: rows.map(function (p, i) { return '#' + (i + 1) + ' ' + p.name; }),
+      datasets: [{ data: rows.map(function (p) { return p.total; }), borderRadius: 4,
+        backgroundColor: rows.map(function (p) { return cssVar('--' + (p.total >= 70 ? 'good' : p.total >= 50 ? 'warn' : 'bad')); }) }] },
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: function (ctx) { var p = rows[ctx.dataIndex];
+          return SC_PARTS.map(function (x) { return x.label + ': ' + (p.parts[x.k] == null ? 'ไม่นับ' : fmt(p.parts[x.k], 0)); }); } } } },
+        scales: { x: { min: 0, max: 110, ticks: { callback: function (v) { return v <= 100 ? v : ''; } } } } } },
+    function (i) { drillScore(rows[i]); }));
+    var palette = [cssVar('--accent'), cssVar('--warn'), cssVar('--good'), cssVar('--bad'), '#8b6fd6', cssVar('--muted')];
+    chart('chRadar', { type: 'radar', data: { labels: SC_PARTS.map(function (x) { return x.label; }),
+      datasets: rows.map(function (p, i) {
+        var c = palette[i % palette.length];
+        return { label: p.name, data: SC_PARTS.map(function (x) { return p.parts[x.k] == null ? null : Math.round(p.parts[x.k]); }),
+          borderColor: c, backgroundColor: /^#[0-9a-f]{6}$/i.test(c) ? c + '22' : c, pointBackgroundColor: c, borderWidth: 2, spanGaps: true };
+      }) },
+      options: { maintainAspectRatio: false, scales: { r: { min: 0, max: 100, ticks: { stepSize: 25, backdropColor: 'transparent' } } },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } } } });
+  }
+  /** รายละเอียดที่มาของคะแนนรวม */
+  function drillScore(p) {
+    var w = scWeights();
+    var raw = {
+      write: p.parts.write == null ? 'ยังไม่มีที่ตรวจแล้ว' : fmt(p.parts.write, 1),
+      case: p.caseScore == null ? 'ยังไม่มีที่ตรวจทั้ง Case' : fmt(p.caseScore, 1) + ' (' + p.reviewedCases.length + ' Case)',
+      nego: p.negoPct == null ? 'ยังไม่มีตัวเลขราคา' : fmt(p.negoPct, 2) + '%',
+      quote: p.quotePct == null ? 'ไม่มีงาน NORMAL' : fmt(p.quotePct, 0) + '% (' + p.normalCases.length + ' Case)',
+      nextaction: p.naPct == null ? 'ยังไม่มีที่ครบกำหนด' : fmt(p.naPct, 0) + '% (ค้าง ' + p.naOverdue + ' จาก ' + p.naDue + ')',
+      speed: p.avgDur == null ? 'ยังไม่มี Case ที่ปิด' : fmtDur(p.avgDur) + ' / Case',
+      data: 'สูง ' + p.sev.high + ' · กลาง ' + p.sev.medium + ' · ต่ำ ' + p.sev.low + ' (จาก ' + p.cases + ' Case)'
+    };
+    var h = '<div class="card table-wrap"><table><thead><tr><th>ด้าน</th><th class="num">ค่าที่วัดได้</th><th class="num">คะแนน (0–100)</th><th class="num">น้ำหนัก</th><th class="num">ได้</th></tr></thead><tbody>' +
+      SC_PARTS.map(function (x) {
+        var v = p.parts[x.k], used = v != null && w[x.k] > 0;
+        return '<tr><td>' + esc(x.label) + '<div class="small muted">' + esc(x.hint) + '</div></td><td class="num small">' + esc(raw[x.k]) + '</td>' +
+          '<td class="num">' + (v == null ? '<span class="muted">ไม่นับ</span>' : fmt(v, 0)) + '</td>' +
+          '<td class="num">' + (used ? fmt(w[x.k] / p.weightUsed * 100, 0) + '%' : '–') + '</td>' +
+          '<td class="num"><b>' + (used ? fmt(v * w[x.k] / p.weightUsed, 1) : '–') + '</b></td></tr>';
+      }).join('') +
+      '<tr style="background:var(--surface-2)"><td><b>คะแนนรวม</b></td><td></td><td></td><td class="num">100%</td><td class="num"><b>' + fmt(p.total, 1) + '</b></td></tr></tbody></table></div>' +
+      '<p class="small muted">ได้ = คะแนนด้านนั้น × น้ำหนัก · ด้านที่ "ไม่นับ" เพราะยังไม่มีข้อมูล น้ำหนักจะถูกแบ่งให้ด้านอื่นตามสัดส่วน · ปรับน้ำหนักได้ที่หน้าตั้งค่า</p>';
+    lastDrill = { custom: function () { drillScore(p); } };
+    openDrawer('Scorecard · ' + p.name + ' — ' + fmt(p.total, 1) + ' คะแนน', h);
+  }
+
   function renderBuyers() {
+    var P = buyerPerf();
     var rows = D.buyers.map(function (b) {
       return '<tr class="clickable" data-buyer="' + esc(b.email) + '"><td><b>' + esc(b.name) + '</b><div class="small muted">' + esc(b.email) + '</div></td>' +
         '<td class="num">' + fmt(b.openCases) + '</td><td class="num">' + fmt(b.staleCases) + '</td>' +
@@ -1084,13 +1227,19 @@
         '<td class="num">' + fmt(b.lowScore) + ' / ' + fmt(b.reviewed) + '</td>' +
         '<td class="num">' + (b.avgFirstResponseDays == null ? '–' : fmt(b.avgFirstResponseDays, 1)) + '</td>' +
         '<td class="num">' + baht(b.savings) + (b.nego && b.nego.pct != null ? '<div class="small muted">' + fmt(b.nego.pct, 2) + '%</div>' : '') + '</td>' +
-        '<td class="small">' + sortedEntries(b.channels).map(function (x) { return esc(x[0]) + ' ' + x[1]; }).join(', ') + '</td></tr>';
+        perfCells(P[b.email]) +
+        '<td class="small" style="min-width:200px">' + sortedEntries(b.channels).map(function (x) { return esc(x[0]) + ' ' + x[1]; }).join(', ') + '</td></tr>';
     }).join('');
     $('tab-buyers').innerHTML = '<div class="card table-wrap"><table><thead><tr><th>Buyer</th><th class="num">Case เปิด</th><th class="num">นิ่ง</th>' +
       '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">Activity / Case</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
-      '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings (%)</th><th>ช่องทาง</th></tr></thead><tbody>' +
+      '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings (%)</th>' +
+      '<th class="num" title="เวลาทำงานเฉลี่ย Activity แรก → CLOSED (Case ที่ปิดแล้ว)">เวลาเฉลี่ย / Case</th><th class="num" title="มูลค่ารวม (ราคาสุดท้าย) ของ Case ที่มีราคา">มูลค่างาน</th>' +
+      '<th class="num">คะแนน AI ทั้ง Case</th><th class="num" title="% Case NORMAL ที่ขอราคาครบตามเกณฑ์">ขอราคาครบ</th>' +
+      '<th class="num" title="% Next action ที่ครบกำหนดแล้วและไม่ค้าง">Next action ตรงเวลา</th><th class="num" title="ปัญหา Data Health: แดง=สูง เหลือง=กลาง เทา=ต่ำ">ปัญหาข้อมูล</th>' +
+      '<th class="num">Scorecard</th><th>ช่องทาง</th></tr></thead><tbody>' +
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
-    $('tab-buyers').innerHTML = '<h2 style="margin-top:0">ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML + negoSection() + vendorSection() + apcSection();
+    $('tab-buyers').innerHTML = scorecardSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML + negoSection() + vendorSection() + apcSection();
+    renderScorecard();
     renderVendorChart();
     renderApcChart();
     $('apcMethod').addEventListener('click', function (e) {
@@ -1545,6 +1694,9 @@
       numRow('STALE_DAYS', 'Case นิ่งเมื่อไม่มี Activity เกิน (วัน)') + numRow('SCORE_THRESHOLD', 'เกณฑ์คะแนน AI ขั้นต่ำ') +
       numRow('MIN_QUOTES', 'Vendor ขั้นต่ำที่ควรเทียบราคา') + numRow('SHORT_DESC_CHARS', 'คำอธิบายสั้นเกินไปถ้าน้อยกว่า (ตัวอักษร)') +
       numRow('BATCH_SIZE', 'AI ตรวจต่อรอบ (Activity)') + numRow('CASE_BATCH_SIZE', 'AI ตรวจทั้ง Case ต่อรอบ (Case)') +
+      '<div class="form-row"><label for="s_SCORECARD_WEIGHTS">น้ำหนัก Scorecard ของ Buyer</label><input type="text" id="s_SCORECARD_WEIGHTS" value="' + esc(s.SCORECARD_WEIGHTS || '') + '"></div>' +
+      '<p class="small muted">รูปแบบ ด้าน:น้ำหนัก คั่นด้วย , — write = คะแนนการเขียน · case = คะแนนทั้ง Case · nego = % ต่อรอง · quote = ขอราคาครบ (NORMAL) · ' +
+        'nextaction = Next action ตรงเวลา · speed = ความเร็วปิด Case · data = คุณภาพข้อมูล (ใส่ 0 = ไม่นับ)</p>' +
       '<div class="form-row"><label for="s_WORK_START">เวลาทำงาน (ใช้คิดระยะเวลา Case)</label><span><input type="time" id="s_WORK_START" value="' + esc(s.WORK_START || '08:00') + '"> – ' +
         '<input type="time" id="s_WORK_END" value="' + esc(s.WORK_END || '17:00') + '"></span></div>' +
       '<p class="small muted">ไม่นับ ส.–อา. และวันหยุดในชีต <b>Holidays</b> ' + (s.storeUrl ? '(<a href="' + esc(s.storeUrl) + '" target="_blank" rel="noopener">เปิด AI Store</a>)' : '') +
@@ -1569,6 +1721,7 @@
       ['STALE_DAYS', 'SCORE_THRESHOLD', 'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CASE_BATCH_SIZE'].forEach(function (k) { payload[k] = Number($('s_' + k).value); });
       payload.WORK_START = $('s_WORK_START').value || '08:00';
       payload.WORK_END = $('s_WORK_END').value || '17:00';
+      payload.SCORECARD_WEIGHTS = $('s_SCORECARD_WEIGHTS').value.trim();
       call('apiSaveSettings', [payload]).then(function () { toast('บันทึกแล้ว'); load(true); })
         .catch(function (err) { toast('บันทึกไม่สำเร็จ: ' + err.message); }).then(function () { b.disabled = false; });
     });
