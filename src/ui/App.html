@@ -11,6 +11,7 @@
   var durPeriod = { unit: 'month', date: '' };   // หน้า "ระยะเวลา"
   try { var dp = JSON.parse(localStorage.getItem('dash.durPeriod') || 'null'); if (dp && dp.unit) durPeriod = dp; } catch (e) {}
   var durBuyer = '';
+  var durMethod = '';                             // หน้า "ระยะเวลา": '' | NORMAL | SPECIAL
   var apcMethod = '';                             // ตัวกรอง Method ของกราฟ Activity ต่อ Case ('' = ทั้งหมด)                              // Buyer ที่เลือกในหน้า "ระยะเวลา" ('' = ทุกคน)       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
 
   // ---------------- helpers ----------------
@@ -602,7 +603,8 @@
   function renderDuration() {
     try { localStorage.setItem('dash.durPeriod', JSON.stringify(durPeriod)); } catch (e) {}
     var r = periodRange(durPeriod);
-    var withDur = D.cases.filter(function (c) { return c.duration; });
+    var withDurAll = D.cases.filter(function (c) { return c.duration; });
+    var withDur = withDurAll.filter(function (c) { return !durMethod || c.method === durMethod; });
     var inRange = function (c) {
       if (c.duration.ongoing) return false;
       if (!r) return true;
@@ -615,7 +617,10 @@
     closed.sort(byDur); ongoing.sort(byDur);
     var mins = closed.map(function (c) { return c.duration.workMinutes; });
     var avg = mins.length ? mins.reduce(function (s, x) { return s + x; }, 0) / mins.length : null;
-    durDrill = { period: periodText(r), closed: closed, ongoing: ongoing, unmeasured: unmeasured };
+    var mLabel = durMethod ? ' · ' + durMethod : '';
+    durDrill = { period: periodText(r) + mLabel, closed: closed, ongoing: ongoing, unmeasured: unmeasured };
+    // NORMAL vs SPECIAL (ไม่ขึ้นกับตัวกรอง Method — ใช้เปรียบเทียบ)
+    var closedAll = withDurAll.filter(function (c) { return inRange(c) && c.duration.measurable; });
     var wd = workDayMinutes();
 
     // สรุปราย Buyer (เฉพาะ Case ที่ปิดแล้วในช่วง)
@@ -629,7 +634,9 @@
         !ongoing.some(function (c) { return c.buyer === durBuyer; })) durBuyer = '';
     var list = closed.concat(ongoing).filter(function (c) { return !durBuyer || c.buyer === durBuyer; }).sort(byDur);
 
-    var h = '<div class="filters">' + periodBar('dur', durPeriod) + '</div>' +
+    var h = '<div class="filters">' + periodBar('dur', durPeriod) +
+      '<div class="seg" id="durMethod">' + [['', 'ทุก Method'], ['NORMAL', 'NORMAL'], ['SPECIAL', 'SPECIAL']].map(function (m) {
+        return '<button data-m="' + m[0] + '" class="' + (durMethod === m[0] ? 'active' : '') + '">' + m[1] + '</button>'; }).join('') + '</div></div>' +
       '<p class="small muted" style="margin-top:0">นับจาก Activity แรก ถึง Activity CLOSED เป็น<b>เวลาทำงาน</b> ' + esc(D.settings.WORK_START || '08:00') + '–' + esc(D.settings.WORK_END || '17:00') +
       ' จ.–ศ. ไม่รวมวันหยุด · ช่วงเวลานับตามวันที่ CLOSED · Case ที่ยังไม่ปิดนับถึงตอนนี้ และไม่นำไปคิดค่าเฉลี่ย</p>';
     h += '<div class="grid kpis">' +
@@ -640,16 +647,26 @@
       kpi('กำลังดำเนินการ', fmt(ongoing.length), 'Case OPEN ที่ยังไม่มี CLOSED (นับถึงตอนนี้)', '', 'drill:durOngoing') +
       kpi('วัดไม่ได้', fmt(unmeasured.length), 'ปิดแล้วแต่มีแค่ Activity CLOSED (ไม่มี Activity ก่อนหน้า)', unmeasured.length ? 'warn' : '', 'drill:durUnmeasured') +
       '</div>';
-    h += '<div class="card" style="margin-top:12px"><div class="card-head"><h3>เวลาเฉลี่ยต่อ Case ราย Buyer (Case ที่ปิดแล้ว)</h3>' +
+    h += '<div class="card" style="margin-top:12px"><h3>เวลาเฉลี่ย NORMAL vs SPECIAL (Case ที่ปิดแล้ว)</h3>' +
+        '<div class="chart-box" id="durMBox"><canvas id="chDurMethod"></canvas></div>' +
+        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>NORMAL (จัดซื้อปกติ มีคู่เทียบ)' +
+        '<span class="legend-dot" style="background:' + cssVar('--warn') + '"></span>SPECIAL (กรณีพิเศษ) · คลิกแท่งเพื่อดู Case · ไม่ขึ้นกับปุ่มกรอง Method ด้านบน</div></div>';
+    h += '<div class="card" style="margin-top:12px"><div class="card-head"><h3>เวลาเฉลี่ยต่อ Case ราย Buyer (Case ที่ปิดแล้ว' + esc(mLabel) + ')</h3>' +
         '<button class="btn ghost" id="durAll"' + (durBuyer ? '' : ' disabled') + '>ดูทุกคน</button></div>' +
         '<div class="chart-box" style="height:' + Math.max(160, buyers.length * 46 + 50) + 'px"><canvas id="chDurBuyer"></canvas></div>' +
         '<p class="small muted">คลิกที่แท่งเพื่อดู Case ของคนนั้นในกราฟด้านล่าง</p></div>';
-    h += '<div class="card" style="margin-top:12px"><h3>Case ของ ' + esc(durBuyer ? nameOf(durBuyer) : 'ทุกคน') + ' — เรียงจากใช้เวลานานสุด <span class="muted">(' + list.length + ')</span></h3>' +
+    h += '<div class="card" style="margin-top:12px"><h3>Case ของ ' + esc(durBuyer ? nameOf(durBuyer) : 'ทุกคน') + esc(mLabel) + ' — เรียงจากใช้เวลานานสุด <span class="muted">(' + list.length + ')</span></h3>' +
         '<div class="chart-box" style="height:' + Math.max(160, list.length * 34 + 60) + 'px"><canvas id="chDurCase"></canvas></div>' +
-        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ปิดแล้ว' +
-        '<span class="legend-dot" style="background:' + cssVar('--warn') + '"></span>กำลังดำเนินการ (นับถึงตอนนี้) · คลิกแท่งเพื่อดูรายละเอียด Case และ Activity</div></div>';
+        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ปิดแล้ว NORMAL' +
+        '<span class="legend-dot" style="background:' + cssVar('--warn') + '"></span>ปิดแล้ว SPECIAL' +
+        '<span class="legend-dot" style="background:' + fade(cssVar('--muted')) + '"></span>กำลังดำเนินการ (นับถึงตอนนี้) · คลิกแท่งเพื่อดูรายละเอียด Case และ Activity</div></div>';
     $('tab-duration').innerHTML = h;
     bindPeriodBar('dur', durPeriod, renderDuration);
+    $('durMethod').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      durMethod = b.dataset.m; renderDuration();
+    });
+    renderDurMethodChart(closedAll, wd);
     $('durAll').addEventListener('click', function () { durBuyer = ''; renderDuration(); });
 
     var hours = function (m) { return Math.round(m / 6) / 10; };   // แกนเป็นชั่วโมง ทศนิยม 1 ตำแหน่ง
@@ -670,7 +687,7 @@
       chart('chDurCase', pickable({ type: 'bar', data: {
         labels: list.map(function (c) { var t = c.ref || ''; return c.id.replace(/^[A-Z]+-\d{4}-/, '') + ' · ' + (t.length > 30 ? t.slice(0, 30) + '…' : t) + (durBuyer ? '' : ' · ' + nameOf(c.buyer)); }),
         datasets: [{ data: list.map(function (c) { return hours(c.duration.workMinutes); }), borderRadius: 4,
-          backgroundColor: list.map(function (c) { return c.duration.ongoing ? cssVar('--warn') : cssVar('--accent'); }) }] },
+          backgroundColor: list.map(function (c) { return c.duration.ongoing ? fade(cssVar('--muted')) : (c.method === 'SPECIAL' ? cssVar('--warn') : cssVar('--accent')); }) }] },
         options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
           tooltip: { callbacks: {
             title: function (it) { var c = list[it[0].dataIndex]; return c.id + ' · ' + (c.ref.length > 60 ? c.ref.slice(0, 60) + '…' : c.ref); },
@@ -683,6 +700,61 @@
     } else {
       $('chDurCase').parentNode.innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ไม่มี Case</div>';
     }
+  }
+
+  /** กราฟเปรียบเทียบเวลาเฉลี่ย NORMAL / SPECIAL ราย Buyer + ทั้งทีม */
+  function renderDurMethodChart(closedAll, wd) {
+    var methods = ['NORMAL', 'SPECIAL'];
+    function stat(list) {
+      var o = {};
+      methods.forEach(function (m) {
+        var cs = list.filter(function (c) { return c.method === m; }).sort(function (a, b) { return b.duration.workMinutes - a.duration.workMinutes; });
+        var xs = cs.map(function (c) { return c.duration.workMinutes; });
+        o[m] = { cases: cs, n: cs.length, avg: xs.length ? xs.reduce(function (s, x) { return s + x; }, 0) / xs.length : null, max: xs.length ? xs[0] : null };
+      });
+      return o;
+    }
+    var groups = {};
+    closedAll.forEach(function (c) { (groups[c.buyer] = groups[c.buyer] || []).push(c); });
+    var rows = Object.keys(groups).map(function (b) { return { email: b, name: nameOf(b), s: stat(groups[b]) }; })
+      .sort(function (a, b) { return a.name.localeCompare(b.name); });
+    if (rows.length) rows.unshift({ email: null, name: 'รวมทั้งทีม', s: stat(closedAll), team: true });
+    $('durMBox').style.height = Math.max(160, rows.length * 56 + 60) + 'px';
+    if (!rows.length) {
+      $('durMBox').innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ไม่มี Case ที่ปิดในช่วงนี้</div>';
+      return;
+    }
+    var hours = function (m) { return m == null ? null : Math.round(m / 6) / 10; };
+    var colors = { NORMAL: cssVar('--accent'), SPECIAL: cssVar('--warn') };
+    var endLabel = { id: 'durMLabel', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx;
+      ctx.save(); ctx.font = '500 11px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle'; ctx.fillStyle = cssVar('--muted');
+      methods.forEach(function (m, di) {
+        ch.getDatasetMeta(di).data.forEach(function (el, i) {
+          var x = rows[i].s[m];
+          ctx.fillText(x.n ? fmtDur(x.avg) + ' (' + x.n + ')' : '–', el.x + 5, el.y);
+        });
+      });
+      ctx.restore();
+    } };
+    chart('chDurMethod', pickable({ type: 'bar', data: { labels: rows.map(function (r) { return r.name; }),
+      datasets: methods.map(function (m) {
+        return { label: m, data: rows.map(function (r) { return hours(r.s[m].avg) || 0; }), borderRadius: 3,
+          backgroundColor: rows.map(function (r) { return r.team ? fade(colors[m]) : colors[m]; }) };
+      }) },
+      plugins: [endLabel],
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: {
+          title: function (it) { return rows[it[0].dataIndex].name + ' — ' + it[0].dataset.label; },
+          label: function (ctx) { var x = rows[ctx.dataIndex].s[ctx.dataset.label];
+            return x.n ? ['เฉลี่ย ' + fmtDur(x.avg) + ' (≈ ' + fmt(x.avg / wd, 1) + ' วันทำการ)', 'นานสุด ' + fmtDur(x.max) + ' · ' + x.n + ' Case'] : 'ไม่มี Case'; } } } },
+        scales: { x: { beginAtZero: true, grace: '30%', title: { display: true, text: 'ชั่วโมงทำงาน (เฉลี่ย)' } } } } },
+    function (i, ds) {
+      var r = rows[i], m = methods[ds], x = r.s[m];
+      drill('ระยะเวลา ' + m + ' · ' + r.name + ' · ' + durDrill.period.replace(/ · (NORMAL|SPECIAL)$/, ''), x.cases, 'case', null, true,
+        { note: x.n ? 'เฉลี่ย <b>' + fmtDur(x.avg) + '</b> ต่อ Case (เวลาทำงาน) จาก ' + x.n + ' Case ที่ปิดแล้ว' : 'ไม่มี Case ' + m + ' ที่ปิดในช่วงนี้',
+          extra: { th: 'ใช้เวลา (เวลาทำงาน)', td: durTd } });
+    }));
   }
 
   // ---------------- buyers ----------------
