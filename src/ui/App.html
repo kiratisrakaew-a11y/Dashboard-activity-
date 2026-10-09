@@ -1090,7 +1090,7 @@
       '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">Activity / Case</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
       '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings (%)</th><th>ช่องทาง</th></tr></thead><tbody>' +
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
-    $('tab-buyers').innerHTML = negoSection() + vendorSection() + apcSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
+    $('tab-buyers').innerHTML = '<h2 style="margin-top:0">ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML + negoSection() + vendorSection() + apcSection();
     renderVendorChart();
     renderApcChart();
     $('apcMethod').addEventListener('click', function (e) {
