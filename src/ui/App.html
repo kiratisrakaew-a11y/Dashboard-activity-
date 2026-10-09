@@ -125,6 +125,85 @@
   /** ค่าว่างถูกนับเป็น "(ว่าง)" ฝั่ง server (countBy_) — เทียบให้ตรงกัน */
   function keyOf(v) { return (v === null || v === undefined || String(v).trim() === '') ? '(ว่าง)' : String(v); }
 
+  // ---------------- เรียงลำดับตาราง (ทุกตารางในหน้า) ----------------
+  // คลิกหัวคอลัมน์เพื่อเรียง คลิกซ้ำเพื่อสลับ · จำการเรียงไว้และใช้ใหม่เมื่อตารางถูกวาดใหม่ (เช่น เปลี่ยนตัวกรอง)
+  var tableSorts = {};        // key = ที่อยู่ของตาราง + หัวคอลัมน์ทั้งหมด → { idx, dir }
+  var sortingNow = false;
+  // innerText แยกบรรทัดตาม <div>/<br> → "฿2,550" กับ "6.61%" ไม่ติดกันเป็นตัวเลขเดียว
+  function cellText(td) { return td ? (td.getAttribute('data-sort') || td.innerText || td.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
+  /** แปลงข้อความในช่องเป็นค่าที่เทียบได้: { n: ตัวเลข } หรือ { s: ข้อความ } หรือ null (ว่าง/–) */
+  function sortValue(text) {
+    var t = text.trim();
+    if (!t || /^[–-]$/.test(t) || t === 'ยังไม่ตรวจ') return null;
+    if (/^\d{4}-\d{2}-\d{2}/.test(t)) return { s: t };                       // วันที่ ISO
+    var g = /^[A-D] · (\d+(\.\d+)?)/.exec(t);                                // ป้ายเกรด "B · 83"
+    if (g) return { n: parseFloat(g[1]) };
+    var c = t.replace(/^[฿+−]/, '').replace(/,/g, '');
+    var m = /^(-?\d+(\.\d+)?)/.exec(c);
+    if (m) {
+      var n = parseFloat(m[1]);
+      var hm = /^(\d+) ชม\. (\d+) นาที/.exec(c);                             // "26 ชม. 48 นาที"
+      if (hm) n = +hm[1] * 60 + +hm[2]; else if (/^\d+ นาที/.test(c)) n = parseFloat(c);
+      if (/^−/.test(t)) n = -n;
+      return { n: n };
+    }
+    return { s: t };
+  }
+  function tableKey(table) {
+    var host = table.closest('section[id], #drawer');
+    var hostId = host ? host.id : '';
+    if (host && host.id === 'drawer') hostId += ':' + $('drawerTitle').textContent;
+    return hostId + '|' + Array.prototype.map.call(table.querySelectorAll('thead th'), function (th) { return th.textContent.trim(); }).join('|');
+  }
+  function sortTable(table, idx, dir) {
+    var tb = table.tBodies[0]; if (!tb) return;
+    var rows = Array.prototype.slice.call(tb.rows);
+    var movable = rows.filter(function (r) { return !r.querySelector('td[colspan]') && !/surface-2/.test(r.getAttribute('style') || ''); });
+    var pinned = rows.filter(function (r) { return movable.indexOf(r) < 0; });
+    movable.forEach(function (r, i) { r._origIndex = r._origIndex == null ? i : r._origIndex; });
+    movable.sort(function (a, b) {
+      var va = sortValue(cellText(a.cells[idx])), vb = sortValue(cellText(b.cells[idx]));
+      if (va === null && vb === null) return a._origIndex - b._origIndex;
+      if (va === null) return 1;                                             // ค่าว่างอยู่ท้ายเสมอ
+      if (vb === null) return -1;
+      var r = (va.n != null && vb.n != null) ? va.n - vb.n
+        : String(va.n != null ? va.n : va.s).localeCompare(String(vb.n != null ? vb.n : vb.s), 'th', { numeric: true });
+      return (r || a._origIndex - b._origIndex) * dir;
+    });
+    sortingNow = true;
+    movable.concat(pinned).forEach(function (r) { tb.appendChild(r); });
+    Array.prototype.forEach.call(table.querySelectorAll('thead th'), function (th, i) {
+      th.classList.toggle('sort-asc', i === idx && dir === 1);
+      th.classList.toggle('sort-desc', i === idx && dir === -1);
+    });
+    setTimeout(function () { sortingNow = false; }, 0);
+  }
+  document.addEventListener('click', function (e) {
+    var th = e.target.closest('thead th');
+    if (!th) return;
+    var table = th.closest('table');
+    var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
+    var key = tableKey(table), cur = tableSorts[key];
+    var dir;
+    if (cur && cur.idx === idx) dir = -cur.dir;
+    else {
+      // คอลัมน์ตัวเลข: เรียงมาก → น้อยก่อน · ข้อความ: ก → ฮ
+      var sample = Array.prototype.map.call(table.tBodies[0] ? table.tBodies[0].rows : [], function (r) { return sortValue(cellText(r.cells[idx])); })
+        .filter(function (v) { return v; });
+      dir = sample.length && sample.every(function (v) { return v.n != null; }) ? -1 : 1;
+    }
+    tableSorts[key] = { idx: idx, dir: dir };
+    sortTable(table, idx, dir);
+  });
+  // ตารางที่ถูกวาดใหม่ → เรียงตามที่เคยเลือกไว้
+  new MutationObserver(function () {
+    if (sortingNow) return;
+    Array.prototype.forEach.call(document.querySelectorAll('main table, #drawer table'), function (t) {
+      var st = tableSorts[tableKey(t)];
+      if (st && !t.querySelector('thead th.sort-asc, thead th.sort-desc')) sortTable(t, st.idx, st.dir);
+    });
+  }).observe(document.body, { childList: true, subtree: true });
+
   // ---------------- tabs ----------------
   function showTab(name) {
     document.querySelectorAll('#tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === name); });
