@@ -153,8 +153,36 @@ function summarizeVendors_(cases, minQuotes) {
 /** key ของสัปดาห์ (วันจันทร์) — ใช้ร่วมกันระหว่าง weekly[] กับ cases[]/activities[] เพื่อให้คลิกกราฟแล้วกรองตรงกัน */
 function weekKey_(d) { return d === null ? '' : dayStr_(weekStart_(d)); }
 
+/** 'HH:MM' → นาทีนับจากเที่ยงคืน */
+function hhmm_(s, dflt) {
+  var m = /^(\d{1,2}):(\d{2})/.exec(String(s || ''));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : dflt;
+}
+
+/**
+ * นาทีทำงานระหว่าง 2 เวลา (เวลาไทย) — นับเฉพาะ จ.–ศ. ช่วง work.start–work.end (นาทีจากเที่ยงคืน)
+ * และไม่นับวันใน holidays ({ 'YYYY-MM-DD': name })
+ */
+function workMinutes_(startIso, endIso, work, holidays) {
+  var s = Date.parse(startIso), e = Date.parse(endIso);
+  if (isNaN(s) || isNaN(e) || e <= s) return 0;
+  var off = 7 * 60;                       // UTC+7
+  var sm = s / 60000 + off, em = e / 60000 + off;
+  var total = 0;
+  for (var day = Math.floor(sm / 1440); day <= Math.floor(em / 1440); day++) {
+    var dow = (day + 4) % 7;               // 1970-01-01 = วันพฤหัส; 0 = อาทิตย์
+    if (dow === 0 || dow === 6) continue;
+    if (holidays && holidays[dayStr_(day)]) continue;
+    var a = Math.max(sm, day * 1440 + work.start), b = Math.min(em, day * 1440 + work.end);
+    if (b > a) total += b - a;
+  }
+  return Math.round(total);
+}
+
 function computeDashboard_(data) {
   var cfg = data.cfg, today = data.today;
+  var nowIso = data.now || new Date().toISOString();
+  var work = { start: hhmm_(cfg.WORK_START, 8 * 60), end: hhmm_(cfg.WORK_END, 17 * 60) };
   var reviews = data.reviews || {};
   var vendors = data.vendors || {};
   var usersByEmail = {};
@@ -243,6 +271,21 @@ function computeDashboard_(data) {
         .map(function (a) { var r = reviews[a.id]; return r ? r.extracted : null; }));
     var closedDays = list.filter(function (a) { return a.type === 'CLOSED' && a.day !== null; }).map(function (a) { return a.day; });
     var closedDay = closedDays.length ? Math.max.apply(null, closedDays) : null;
+    // ระยะเวลา: Activity แรก → Activity CLOSED ล่าสุด (ยังไม่ปิด = ถึงตอนนี้) เป็นนาทีทำงาน
+    var duration = null;
+    var timed = list.filter(function (a) { return !isNaN(Date.parse(a.date)); });
+    if (timed.length) {
+      var t0 = timed.reduce(function (m, a) { return Date.parse(a.date) < Date.parse(m) ? a.date : m; }, timed[0].date);
+      var closedActs = timed.filter(function (a) { return a.type === 'CLOSED'; });
+      var t1 = closedActs.length ? closedActs.reduce(function (m, a) { return Date.parse(a.date) > Date.parse(m) ? a.date : m; }, closedActs[0].date) : nowIso;
+      duration = {
+        start: new Date(Date.parse(t0)).toISOString(), end: new Date(Date.parse(t1)).toISOString(), ongoing: !closedActs.length,
+        // ปิดแล้วแต่ CLOSED ไม่ได้อยู่หลัง Activity แรก (เช่น บันทึก Activity เดียว) → วัดระยะเวลาไม่ได้
+        measurable: !closedActs.length || Date.parse(t1) > Date.parse(t0),
+        workMinutes: workMinutes_(t0, t1, work, data.holidays || {}),
+        elapsedMinutes: Math.max(0, Math.round((Date.parse(t1) - Date.parse(t0)) / 60000))
+      };
+    }
     var scores = list.map(function (a) { return a.score; });
     return {
       id: c.Case_ID, row: c._row, ref: c.Request_Ref || '', requester: c.Requester_Name || '',
@@ -265,6 +308,7 @@ function computeDashboard_(data) {
       avgScore: avg_(scores),
       savings: sav,
       value: value,
+      duration: duration,
       closedDate: dayStr_(closedDay),
       rankDate: dayStr_(closedDay !== null ? closedDay : lastDay),
       priceGap: priceGap,

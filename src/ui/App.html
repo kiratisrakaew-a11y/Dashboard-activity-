@@ -7,7 +7,10 @@
   var methodScope = 'OPEN';   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
   var lastDrill = null;
   var rankPeriod = { unit: 'month', date: '' };   // หน้า "จัดอันดับ" (date ว่าง = วันนี้)
-  try { var rp = JSON.parse(localStorage.getItem('dash.rankPeriod') || 'null'); if (rp && rp.unit) rankPeriod = rp; } catch (e) {}       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
+  try { var rp = JSON.parse(localStorage.getItem('dash.rankPeriod') || 'null'); if (rp && rp.unit) rankPeriod = rp; } catch (e) {}
+  var durPeriod = { unit: 'month', date: '' };   // หน้า "ระยะเวลา"
+  try { var dp = JSON.parse(localStorage.getItem('dash.durPeriod') || 'null'); if (dp && dp.unit) durPeriod = dp; } catch (e) {}
+  var durBuyer = '';                              // Buyer ที่เลือกในหน้า "ระยะเวลา" ('' = ทุกคน)       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
 
   // ---------------- helpers ----------------
   function $(id) { return document.getElementById(id); }
@@ -75,7 +78,10 @@
   /** ทำให้กราฟคลิกได้: onPick(index, datasetIndex) เมื่อคลิกแท่ง/ชิ้น/จุด */
   function pickable(cfg, onPick) {
     cfg.options = cfg.options || {};
-    cfg.options.onClick = function (evt, els) { if (els && els.length) onPick(els[0].index, els[0].datasetIndex); };
+    // เลื่อนไปทำหลัง Chart.js จัดการ event เสร็จ — onPick อาจวาดกราฟนี้ใหม่ (destroy) ระหว่าง event
+    cfg.options.onClick = function (evt, els) {
+      if (els && els.length) { var i = els[0].index, ds = els[0].datasetIndex; setTimeout(function () { onPick(i, ds); }, 0); }
+    };
     cfg.options.onHover = function (evt, els) {
       var t = evt.native && evt.native.target; if (t) t.style.cursor = els && els.length ? 'pointer' : 'default';
     };
@@ -393,6 +399,12 @@
       drill('AI: ความเสี่ยงสูง (Case ที่ยัง OPEN)', openCases().filter(function (c) { return c.caseReview && c.caseReview.risk === 'high'; }), 'case', null, false,
         { extra: { th: 'ขั้นต่อไป (AI)', td: function (c) { return esc(c.caseReview.nextStep || '–'); } } });
     },
+    durClosed: function () { if (durDrill) drill('Case ที่ปิดแล้ว · ' + durDrill.period, durDrill.closed, 'case', null, true, { extra: { th: 'ใช้เวลา (เวลาทำงาน)', td: durTd } }); },
+    durUnmeasured: function () {
+      if (durDrill) drill('วัดระยะเวลาไม่ได้ · ' + durDrill.period, durDrill.unmeasured, 'case', null, true,
+        { note: 'Case ที่ปิดแล้วแต่ Activity CLOSED ไม่ได้อยู่หลัง Activity แรก (ส่วนใหญ่คือบันทึกแค่ Activity เดียว) จึงไม่นำไปคิดค่าเฉลี่ย — ควรให้ Buyer บันทึก Activity ระหว่างทาง' });
+    },
+    durOngoing: function () { if (durDrill) drill('Case ที่กำลังดำเนินการ (นับถึงตอนนี้)', durDrill.ongoing, 'case', null, true, { extra: { th: 'ใช้เวลาแล้ว', td: durTd } }); },
     healthHigh: function () { drillHealth('high', 'สูง'); },
     healthMedium: function () { drillHealth('medium', 'กลาง'); },
     healthLow: function () { drillHealth('low', 'ต่ำ'); },
@@ -407,6 +419,7 @@
           return baht(s.initial * s.quantity) + ' → ' + baht(s.final * s.quantity) + '<br><b style="color:var(--good)">ลด ' + baht(s.saving) + ' (' + pctTxt(s.pct) + ')</b>'; } } });
     }
   };
+  function durTd(c) { return c.duration ? '<b>' + fmtDur(c.duration.workMinutes) + '</b><div class="muted">' + (c.duration.ongoing ? 'กำลังดำเนินการ' : 'ปิด ' + esc(c.closedDate)) + '</div>' : '–'; }
   function valueTd(c) { return c.value ? baht(c.value.value) + '<div class="muted">' + esc(BASIS_LABEL[c.value.basis]) + '</div>' : '<span class="muted">ยังไม่มีราคา</span>'; }
   function drillHealth(sev, th) {
     drill('Data Health — ปัญหาระดับ' + th, D.health.issues.filter(function (i) { return i.severity === sev; }), 'issue', null, true,
@@ -441,12 +454,36 @@
     if (r.unit === 'month') return thDate(r.from, { month: 'long', year: 'numeric' });
     return thDate(r.from, { day: 'numeric', month: 'short' }) + ' – ' + thDate(r.to, { day: 'numeric', month: 'short', year: 'numeric' });
   }
-  function shiftPeriod(step) {
-    var d = dayOf(rankPeriod.date || D.today);
-    if (rankPeriod.unit === 'day') d += step;
-    else if (rankPeriod.unit === 'week') d += 7 * step;
+  function shiftPeriod(p, step) {
+    var d = dayOf(p.date || D.today);
+    if (p.unit === 'day') d += step;
+    else if (p.unit === 'week') d += 7 * step;
     else { var dt = new Date(d * 86400000); d = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + step, 1) / 86400000; }
-    rankPeriod.date = isoOf(d);
+    p.date = isoOf(d);
+  }
+  /** แถบตัวกรองช่วงเวลา (ใช้ร่วมกันหลายหน้า) — id ขึ้นต้นด้วย prefix */
+  function periodBar(prefix, p) {
+    var r = periodRange(p);
+    var units = [['day', 'วัน'], ['week', 'สัปดาห์'], ['month', 'เดือน'], ['all', 'ทั้งหมด']];
+    return '<div class="seg" id="' + prefix + 'Unit">' + units.map(function (u) {
+        return '<button data-unit="' + u[0] + '" class="' + (p.unit === u[0] ? 'active' : '') + '">' + u[1] + '</button>';
+      }).join('') + '</div>' +
+      (r ? '<button class="btn ghost" id="' + prefix + 'Prev" title="ช่วงก่อนหน้า">◀</button>' +
+        '<input type="date" id="' + prefix + 'Date" value="' + esc(p.date || D.today) + '">' +
+        '<button class="btn ghost" id="' + prefix + 'Next" title="ช่วงถัดไป">▶</button>' +
+        '<button class="btn ghost" id="' + prefix + 'Today">วันนี้</button>' : '') +
+      '<span class="period-label">' + esc(periodText(r)) + '</span>';
+  }
+  function bindPeriodBar(prefix, p, rerender) {
+    $(prefix + 'Unit').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      p.unit = b.dataset.unit; rerender();
+    });
+    if (!$(prefix + 'Prev')) return;
+    $(prefix + 'Prev').addEventListener('click', function () { shiftPeriod(p, -1); rerender(); });
+    $(prefix + 'Next').addEventListener('click', function () { shiftPeriod(p, 1); rerender(); });
+    $(prefix + 'Today').addEventListener('click', function () { p.date = ''; rerender(); });
+    $(prefix + 'Date').addEventListener('change', function () { if (this.value) { p.date = this.value; rerender(); } });
   }
   var BASIS_LABEL = { final: 'ราคาสุดท้าย', initial: 'ราคาเสนอแรก (ยังไม่มีราคาสุดท้าย)', estimate: 'ราคาประมาณการ (ยังไม่มีราคาจาก Vendor)' };
 
@@ -462,16 +499,7 @@
     var totalValue = valued.reduce(function (s, c) { return s + c.value.value; }, 0);
     var totalSaving = saved.reduce(function (s, c) { return s + c.savings.saving; }, 0);
     var totalInitial = saved.reduce(function (s, c) { return s + c.savings.initial * c.savings.quantity; }, 0);
-    var units = [['day', 'วัน'], ['week', 'สัปดาห์'], ['month', 'เดือน'], ['all', 'ทั้งหมด']];
-
-    var h = '<div class="filters"><div class="seg" id="rankUnit">' + units.map(function (u) {
-        return '<button data-unit="' + u[0] + '" class="' + (rankPeriod.unit === u[0] ? 'active' : '') + '">' + u[1] + '</button>';
-      }).join('') + '</div>' +
-      (r ? '<button class="btn ghost" id="rankPrev" title="ช่วงก่อนหน้า">◀</button>' +
-        '<input type="date" id="rankDate" value="' + esc(rankPeriod.date || D.today) + '">' +
-        '<button class="btn ghost" id="rankNext" title="ช่วงถัดไป">▶</button>' +
-        '<button class="btn ghost" id="rankToday">วันนี้</button>' : '') +
-      '<span class="period-label">' + esc(periodText(r)) + '</span></div>';
+    var h = '<div class="filters">' + periodBar('rank', rankPeriod) + '</div>';
     h += '<div class="grid kpis">' +
       kpi('Case ในช่วงนี้', fmt(inPeriod.length), 'มีมูลค่า ' + fmt(valued.length) + ' · ยังไม่มีราคา ' + fmt(inPeriod.length - valued.length), '', 'drill:rankCases') +
       kpi('มูลค่ารวม', baht(round2(totalValue)), 'ราคาสุดท้าย (ถ้ายังไม่มีใช้ราคาเสนอแรก/ประมาณการ)', '', 'drill:rankValue') +
@@ -493,16 +521,7 @@
       'Case ที่ยังไม่สรุปผลใช้วันที่ Activity ล่าสุด · ตัวเลขราคา AI ดึงจากข้อความ Activity ถ้าไม่ถูกให้แก้ข้อความใน DB หรือกด "ตรวจทั้ง Case ใหม่"</p>';
     $('tab-ranking').innerHTML = h;
 
-    $('rankUnit').addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      rankPeriod.unit = b.dataset.unit; renderRanking();
-    });
-    if (r) {
-      $('rankPrev').addEventListener('click', function () { shiftPeriod(-1); renderRanking(); });
-      $('rankNext').addEventListener('click', function () { shiftPeriod(1); renderRanking(); });
-      $('rankToday').addEventListener('click', function () { rankPeriod.date = ''; renderRanking(); });
-      $('rankDate').addEventListener('change', function () { if (this.value) { rankPeriod.date = this.value; renderRanking(); } });
-    }
+    bindPeriodBar('rank', rankPeriod, renderRanking);
 
     $('rankSort').addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
@@ -557,6 +576,113 @@
     function (i) { openCase(top[i].id, r); }));
   }
   function round2(n) { return Math.round(n * 100) / 100; }
+
+  // ---------------- ระยะเวลา ----------------
+  function fmtDur(min) {
+    if (min == null) return '–';
+    min = Math.round(min);
+    var h = Math.floor(min / 60), m = min % 60;
+    return (h ? fmt(h) + ' ชม. ' : '') + m + ' นาที';
+  }
+  function fmtTime(iso) {
+    return new Date(iso).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function workDayMinutes() {
+    function m(s, d) { var x = /^(\d{1,2}):(\d{2})/.exec(s || ''); return x ? +x[1] * 60 + +x[2] : d; }
+    return Math.max(1, m(D.settings.WORK_END, 1020) - m(D.settings.WORK_START, 480));
+  }
+  function median(xs) {
+    if (!xs.length) return null;
+    var s = xs.slice().sort(function (a, b) { return a - b; }), k = Math.floor(s.length / 2);
+    return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
+  }
+  var durDrill = null;
+
+  function renderDuration() {
+    try { localStorage.setItem('dash.durPeriod', JSON.stringify(durPeriod)); } catch (e) {}
+    var r = periodRange(durPeriod);
+    var withDur = D.cases.filter(function (c) { return c.duration; });
+    var inRange = function (c) {
+      if (c.duration.ongoing) return false;
+      if (!r) return true;
+      var d = dayOf(c.closedDate); return d !== null && d >= r.from && d <= r.to;
+    };
+    var closed = withDur.filter(function (c) { return inRange(c) && c.duration.measurable; });
+    var unmeasured = withDur.filter(function (c) { return inRange(c) && !c.duration.measurable; });
+    var ongoing = withDur.filter(function (c) { return c.duration.ongoing && c.status === 'OPEN'; });
+    function byDur(a, b) { return b.duration.workMinutes - a.duration.workMinutes; }
+    closed.sort(byDur); ongoing.sort(byDur);
+    var mins = closed.map(function (c) { return c.duration.workMinutes; });
+    var avg = mins.length ? mins.reduce(function (s, x) { return s + x; }, 0) / mins.length : null;
+    durDrill = { period: periodText(r), closed: closed, ongoing: ongoing, unmeasured: unmeasured };
+    var wd = workDayMinutes();
+
+    // สรุปราย Buyer (เฉพาะ Case ที่ปิดแล้วในช่วง)
+    var byBuyer = {};
+    closed.forEach(function (c) { (byBuyer[c.buyer] = byBuyer[c.buyer] || []).push(c.duration.workMinutes); });
+    var buyers = Object.keys(byBuyer).map(function (b) {
+      var xs = byBuyer[b];
+      return { email: b, n: xs.length, avg: xs.reduce(function (s, x) { return s + x; }, 0) / xs.length, max: Math.max.apply(null, xs) };
+    }).sort(function (a, b) { return b.avg - a.avg; });
+    if (durBuyer && !buyers.some(function (b) { return b.email === durBuyer; }) &&
+        !ongoing.some(function (c) { return c.buyer === durBuyer; })) durBuyer = '';
+    var list = closed.concat(ongoing).filter(function (c) { return !durBuyer || c.buyer === durBuyer; }).sort(byDur);
+
+    var h = '<div class="filters">' + periodBar('dur', durPeriod) + '</div>' +
+      '<p class="small muted" style="margin-top:0">นับจาก Activity แรก ถึง Activity CLOSED เป็น<b>เวลาทำงาน</b> ' + esc(D.settings.WORK_START || '08:00') + '–' + esc(D.settings.WORK_END || '17:00') +
+      ' จ.–ศ. ไม่รวมวันหยุด · ช่วงเวลานับตามวันที่ CLOSED · Case ที่ยังไม่ปิดนับถึงตอนนี้ และไม่นำไปคิดค่าเฉลี่ย</p>';
+    h += '<div class="grid kpis">' +
+      kpi('Case ที่ปิดในช่วงนี้', fmt(closed.length), 'มี Activity CLOSED แล้ว', '', 'drill:durClosed') +
+      kpi('เวลาเฉลี่ยต่อ Case', fmtDur(avg), avg == null ? '' : '≈ ' + fmt(avg / wd, 1) + ' วันทำการ', '', 'drill:durClosed') +
+      kpi('ค่ากลาง (median)', fmtDur(median(mins)), 'ครึ่งหนึ่งของ Case เสร็จเร็วกว่านี้', '', 'drill:durClosed') +
+      kpi('นานสุด', mins.length ? fmtDur(mins[0]) : '–', closed.length ? esc(closed[0].id) + ' · ' + esc(nameOf(closed[0].buyer)) : '', 'warn', 'drill:durClosed') +
+      kpi('กำลังดำเนินการ', fmt(ongoing.length), 'Case OPEN ที่ยังไม่มี CLOSED (นับถึงตอนนี้)', '', 'drill:durOngoing') +
+      kpi('วัดไม่ได้', fmt(unmeasured.length), 'ปิดแล้วแต่มีแค่ Activity CLOSED (ไม่มี Activity ก่อนหน้า)', unmeasured.length ? 'warn' : '', 'drill:durUnmeasured') +
+      '</div>';
+    h += '<div class="card" style="margin-top:12px"><div class="card-head"><h3>เวลาเฉลี่ยต่อ Case ราย Buyer (Case ที่ปิดแล้ว)</h3>' +
+        '<button class="btn ghost" id="durAll"' + (durBuyer ? '' : ' disabled') + '>ดูทุกคน</button></div>' +
+        '<div class="chart-box" style="height:' + Math.max(160, buyers.length * 46 + 50) + 'px"><canvas id="chDurBuyer"></canvas></div>' +
+        '<p class="small muted">คลิกที่แท่งเพื่อดู Case ของคนนั้นในกราฟด้านล่าง</p></div>';
+    h += '<div class="card" style="margin-top:12px"><h3>Case ของ ' + esc(durBuyer ? nameOf(durBuyer) : 'ทุกคน') + ' — เรียงจากใช้เวลานานสุด <span class="muted">(' + list.length + ')</span></h3>' +
+        '<div class="chart-box" style="height:' + Math.max(160, list.length * 34 + 60) + 'px"><canvas id="chDurCase"></canvas></div>' +
+        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ปิดแล้ว' +
+        '<span class="legend-dot" style="background:' + cssVar('--warn') + '"></span>กำลังดำเนินการ (นับถึงตอนนี้) · คลิกแท่งเพื่อดูรายละเอียด Case และ Activity</div></div>';
+    $('tab-duration').innerHTML = h;
+    bindPeriodBar('dur', durPeriod, renderDuration);
+    $('durAll').addEventListener('click', function () { durBuyer = ''; renderDuration(); });
+
+    var hours = function (m) { return Math.round(m / 6) / 10; };   // แกนเป็นชั่วโมง ทศนิยม 1 ตำแหน่ง
+    var axis = { beginAtZero: true, title: { display: true, text: 'ชั่วโมงทำงาน' }, ticks: { callback: function (v) { return fmt(v); } } };
+    if (buyers.length) {
+      chart('chDurBuyer', pickable({ type: 'bar', data: { labels: buyers.map(function (b) { return nameOf(b.email) + ' (' + b.n + ' Case)'; }),
+        datasets: [{ data: buyers.map(function (b) { return hours(b.avg); }), borderRadius: 4,
+          backgroundColor: buyers.map(function (b) { return !durBuyer || b.email === durBuyer ? cssVar('--accent') : cssVar('--muted'); }) }] },
+        options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: function (ctx) { var b = buyers[ctx.dataIndex];
+            return ['เฉลี่ย ' + fmtDur(b.avg) + ' (≈ ' + fmt(b.avg / wd, 1) + ' วันทำการ)', 'นานสุด ' + fmtDur(b.max) + ' · ' + b.n + ' Case']; } } } },
+          scales: { x: axis } } },
+      function (i) { durBuyer = buyers[i].email; renderDuration(); }));
+    } else {
+      $('chDurBuyer').parentNode.innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ไม่มี Case ที่ปิดในช่วงนี้</div>';
+    }
+    if (list.length) {
+      chart('chDurCase', pickable({ type: 'bar', data: {
+        labels: list.map(function (c) { var t = c.ref || ''; return c.id.replace(/^[A-Z]+-\d{4}-/, '') + ' · ' + (t.length > 30 ? t.slice(0, 30) + '…' : t) + (durBuyer ? '' : ' · ' + nameOf(c.buyer)); }),
+        datasets: [{ data: list.map(function (c) { return hours(c.duration.workMinutes); }), borderRadius: 4,
+          backgroundColor: list.map(function (c) { return c.duration.ongoing ? cssVar('--warn') : cssVar('--accent'); }) }] },
+        options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
+          tooltip: { callbacks: {
+            title: function (it) { var c = list[it[0].dataIndex]; return c.id + ' · ' + (c.ref.length > 60 ? c.ref.slice(0, 60) + '…' : c.ref); },
+            label: function (ctx) { var c = list[ctx.dataIndex], d = c.duration;
+              return [fmtDur(d.workMinutes) + ' (เวลาทำงาน ≈ ' + fmt(d.workMinutes / wd, 1) + ' วันทำการ)' + (d.ongoing ? ' · กำลังดำเนินการ' : ''),
+                fmtTime(d.start) + ' → ' + (d.ongoing ? 'ตอนนี้' : fmtTime(d.end)) + ' · ตามปฏิทิน ' + fmtDur(d.elapsedMinutes),
+                nameOf(c.buyer) + ' · ' + c.method + ' · ' + c.activityCount + ' Activity']; } } } },
+          scales: { x: axis } } },
+      function (i) { openCase(list[i].id); }));
+    } else {
+      $('chDurCase').parentNode.innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ไม่มี Case</div>';
+    }
+  }
 
   // ---------------- buyers ----------------
   // ---------- ผลการต่อรองราคา ----------
@@ -876,6 +1002,12 @@
         '<div class="small muted">ที่มา: ' + (c.savings.source === 'case' ? 'AI ตรวจทั้ง Case' : 'AI ราย Activity') + '</div></div>' : '') +
       (c.priceGap ? '<div>Savings</div><div><span class="badge ' + (c.priceGap.code === 'NOT_REVIEWED' ? '' : 'bad') + '">วัดไม่ได้: ' + esc(c.priceGap.label) + '</span></div>' : '') +
       '<div>DB</div><div>' + sheetLink('Cases', c.row, 'เปิดแถวใน Sheet') + '</div></div>';
+    if (c.duration) {
+      h += '<div class="dur-head">⏱ ใช้เวลา <b>' + fmtDur(c.duration.workMinutes) + '</b> (เวลาทำงาน) ' +
+        (c.duration.ongoing ? '<span class="badge warn">กำลังดำเนินการ — นับถึงตอนนี้</span>' : '<span class="badge good">ถึง Activity CLOSED</span>') +
+        '<div class="small muted">' + esc(fmtTime(c.duration.start)) + ' → ' + esc(c.duration.ongoing ? 'ตอนนี้' : fmtTime(c.duration.end)) +
+        ' · ตามปฏิทินจริง ' + fmtDur(c.duration.elapsedMinutes) + '</div></div>';
+    }
     h += caseReviewBlock(c);
     h += '<h2>Activity (' + acts.length + ')</h2>' + (range ? '<p class="small muted">ช่วงที่เลือก: ' + esc(periodText(range)) +
       ' — Activity นอกช่วงแสดงจางลง</p>' : '') + '<div class="timeline">' + (acts.length ? acts.map(function (a) {
@@ -1083,7 +1215,11 @@
       '<div class="card"><h3>เกณฑ์ Dashboard</h3>' +
       numRow('STALE_DAYS', 'Case นิ่งเมื่อไม่มี Activity เกิน (วัน)') + numRow('SCORE_THRESHOLD', 'เกณฑ์คะแนน AI ขั้นต่ำ') +
       numRow('MIN_QUOTES', 'Vendor ขั้นต่ำที่ควรเทียบราคา') + numRow('SHORT_DESC_CHARS', 'คำอธิบายสั้นเกินไปถ้าน้อยกว่า (ตัวอักษร)') +
-      numRow('BATCH_SIZE', 'AI ตรวจต่อรอบ (Activity)') + numRow('CASE_BATCH_SIZE', 'AI ตรวจทั้ง Case ต่อรอบ (Case)') + '</div></div>' +
+      numRow('BATCH_SIZE', 'AI ตรวจต่อรอบ (Activity)') + numRow('CASE_BATCH_SIZE', 'AI ตรวจทั้ง Case ต่อรอบ (Case)') +
+      '<div class="form-row"><label for="s_WORK_START">เวลาทำงาน (ใช้คิดระยะเวลา Case)</label><span><input type="time" id="s_WORK_START" value="' + esc(s.WORK_START || '08:00') + '"> – ' +
+        '<input type="time" id="s_WORK_END" value="' + esc(s.WORK_END || '17:00') + '"></span></div>' +
+      '<p class="small muted">ไม่นับ ส.–อา. และวันหยุดในชีต <b>Holidays</b> ' + (s.storeUrl ? '(<a href="' + esc(s.storeUrl) + '" target="_blank" rel="noopener">เปิด AI Store</a>)' : '') +
+        ' — ระบบใส่วันหยุดราชการปี 2026 ไว้ให้ ควรตรวจกับประกาศวันหยุดบริษัทและเพิ่มปีถัดไป</p></div></div>' +
       '<div class="filters" style="margin-top:12px"><button class="btn" id="btnSave">บันทึกการตั้งค่า</button>' +
       (s.storeUrl ? '<a class="small" href="' + esc(s.storeUrl) + '" target="_blank" rel="noopener">เปิด AI Store (ไฟล์แยก)</a>' : '') + '</div>';
     h += '<h2>เกณฑ์ที่ AI ใช้ตรวจ</h2><p class="small muted">เลือกเกณฑ์ตามลำดับ: ชีต <b>Criteria</b> ใน AI Store (แยกตาม Method) → hint ใน DB (Config_Settings: HINT_ACTIVITY_*) แล้วต่อท้ายด้วยเกณฑ์กลาง 3 ข้อ ' +
@@ -1102,6 +1238,8 @@
       var b = e.target; b.disabled = true;
       var payload = { AI_PROVIDER: $('sProvider').value, AI_MODEL: $('sModel').value.trim(), AI_EFFORT: $('sEffort').value };
       ['STALE_DAYS', 'SCORE_THRESHOLD', 'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CASE_BATCH_SIZE'].forEach(function (k) { payload[k] = Number($('s_' + k).value); });
+      payload.WORK_START = $('s_WORK_START').value || '08:00';
+      payload.WORK_END = $('s_WORK_END').value || '17:00';
       call('apiSaveSettings', [payload]).then(function () { toast('บันทึกแล้ว'); load(true); })
         .catch(function (err) { toast('บันทึกไม่สำเร็จ: ' + err.message); }).then(function () { b.disabled = false; });
     });
@@ -1113,7 +1251,7 @@
   // ---------------- load ----------------
   function renderAll() {
     $('subtitle').textContent = 'ข้อมูล ณ ' + new Date(D.generatedAt).toLocaleString('th-TH') + ' · อ่านจาก "' + D.meta.name + '" (อ่านอย่างเดียว)';
-    renderOverview(); renderBuyers(); renderRanking(); renderCases(); renderAi(); renderHealth(); renderSettings();
+    renderOverview(); renderBuyers(); renderRanking(); renderDuration(); renderCases(); renderAi(); renderHealth(); renderSettings();
   }
   function load(refresh) {
     $('loading').classList.remove('hidden'); $('error').classList.add('hidden');

@@ -232,3 +232,35 @@ test('computeDashboard_: มูลค่า Case, วันที่สรุป
   assert.equal(c2.value, null);
   assert.equal(dash.cases.find((c) => c.id === 'C3').rankDate, '');
 });
+
+test('workMinutes_: นับเฉพาะเวลาทำงาน จ.–ศ. 08:00–17:00 ไม่รวมวันหยุด', () => {
+  const W = { start: 8 * 60, end: 17 * 60 };
+  const bkk = (s) => new Date(s + '+07:00').toISOString();
+  const wm = (a, b, h) => G.workMinutes_(bkk(a), bkk(b), W, h || {});
+  assert.equal(wm('2026-10-01T09:00', '2026-10-01T10:30'), 90);                  // วันเดียวกัน
+  assert.equal(wm('2026-10-01T16:00', '2026-10-02T09:00'), 120);                 // ข้ามคืน: 16-17 + 8-9
+  assert.equal(wm('2026-10-02T16:00', '2026-10-05T09:00'), 120);                 // ศ. → จ. ข้ามเสาร์-อาทิตย์
+  assert.equal(wm('2026-10-12T16:00', '2026-10-14T09:00', { '2026-10-13': 'หยุด' }), 120); // ข้ามวันหยุด
+  assert.equal(wm('2026-10-01T06:00', '2026-10-01T20:00'), 540);                 // เริ่ม/จบนอกเวลางาน
+  assert.equal(wm('2026-10-03T09:00', '2026-10-04T15:00'), 0);                   // เสาร์-อาทิตย์ทั้งหมด
+  assert.equal(wm('2026-10-02T10:00', '2026-10-01T10:00'), 0);                   // end < start
+  assert.equal(G.hhmm_('8:30', 0), 510);
+  assert.equal(G.hhmm_('', 480), 480);
+});
+
+test('computeDashboard_: duration ของ Case (ปิดแล้ว / กำลังดำเนินการ / ไม่มี Activity)', () => {
+  const d = fixtures(G);
+  d.now = '2026-10-08T03:00:00.000Z';   // พฤ. 10:00 เวลาไทย
+  const dash = G.computeDashboard_(d);
+  const c1 = dash.cases.find((c) => c.id === 'C1');
+  // A1 พฤ. 1 ต.ค. 11:00 → A3 (CLOSED) อ. 6 ต.ค. 11:00 = 360 + 540 + 540 + 180
+  assert.equal(c1.duration.ongoing, false);
+  assert.equal(c1.duration.measurable, true);
+  assert.equal(c1.duration.workMinutes, 1620);
+  assert.equal(c1.duration.elapsedMinutes, 5 * 24 * 60);
+  const c2 = dash.cases.find((c) => c.id === 'C2');
+  // A4 พ. 7 ต.ค. 11:00 → now พฤ. 8 ต.ค. 10:00 = 360 + 120
+  assert.equal(c2.duration.ongoing, true);
+  assert.equal(c2.duration.workMinutes, 480);
+  assert.equal(dash.cases.find((c) => c.id === 'C3').duration, null);
+});

@@ -29,6 +29,8 @@ function loadData_() {
   var cases = DbReader.readCases();
   var activities = DbReader.readActivities();
   var settings = DbReader.readSettings();
+  var holidays = {};
+  try { holidays = Store.readHolidays(); } catch (e) { console.warn(e.message); }
   var storeCriteria = {};
   try { storeCriteria = Store.readCriteria(); } catch (e) { console.warn(e.message); }
   var critVer = criteriaVersion_(settings, storeCriteria);
@@ -58,7 +60,7 @@ function loadData_() {
   return {
     cfg: cfg, cases: cases, activities: activities, users: DbReader.readUsers(),
     vendors: vendors, reviews: reviews, settings: settings, storeCriteria: storeCriteria,
-    caseReviews: caseReviews, today: dayNum_(new Date())
+    caseReviews: caseReviews, holidays: holidays, now: new Date().toISOString(), today: dayNum_(new Date())
   };
 }
 

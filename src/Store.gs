@@ -13,8 +13,22 @@ var STORE_SHEETS = {
   Criteria: ['Method', 'Activity_Type', 'Criteria', 'Is_Active', 'Note'],
   Case_Reviews: ['Case_ID', 'Hash', 'Activity_Count', 'Provider', 'Model', 'Score', 'Grade', 'Summary',
     'Criteria_JSON', 'Missing_Steps', 'Inconsistencies', 'Ready_To_Close', 'Next_Step', 'Risk',
-    'Savings_JSON', 'Tokens_In', 'Tokens_Out', 'Reviewed_At']
+    'Savings_JSON', 'Tokens_In', 'Tokens_Out', 'Reviewed_At'],
+  Holidays: ['Date', 'Name', 'Note']
 };
+
+/** วันหยุดตั้งต้น (ปี 2026) — HEAD ควรตรวจ/แก้ให้ตรงกับประกาศวันหยุดของบริษัท และเพิ่มปีถัดไปเอง */
+function holidaySeed_() {
+  var note = 'ตรวจกับประกาศวันหยุดบริษัท — เพิ่ม/ลบแถวได้ (รูปแบบวันที่ YYYY-MM-DD)';
+  return [
+    ['2026-01-01', 'วันขึ้นปีใหม่'], ['2026-03-03', 'วันมาฆบูชา'], ['2026-04-06', 'วันจักรี'],
+    ['2026-04-13', 'วันสงกรานต์'], ['2026-04-14', 'วันสงกรานต์'], ['2026-04-15', 'วันสงกรานต์'],
+    ['2026-05-01', 'วันแรงงานแห่งชาติ'], ['2026-05-04', 'วันฉัตรมงคล'], ['2026-06-01', 'ชดเชยวันวิสาขบูชา (31 พ.ค.)'],
+    ['2026-06-03', 'วันเฉลิมพระชนมพรรษาพระราชินี'], ['2026-07-28', 'วันเฉลิมพระชนมพรรษา ร.10'], ['2026-07-29', 'วันอาสาฬหบูชา'],
+    ['2026-08-12', 'วันแม่แห่งชาติ'], ['2026-10-13', 'วันนวมินทรมหาราช'], ['2026-10-23', 'วันปิยมหาราช'],
+    ['2026-12-07', 'ชดเชยวันพ่อแห่งชาติ (5 ธ.ค.)'], ['2026-12-10', 'วันรัฐธรรมนูญ'], ['2026-12-31', 'วันสิ้นปี']
+  ].map(function (r) { return [r[0], r[1], note]; });
+}
 
 /** เกณฑ์ตั้งต้นของงาน SPECIAL (เลือก Vendor รายเดียว ไม่ต้องมีคู่เทียบ) — 1 เกณฑ์ต่อบรรทัด */
 function criteriaSeed_() {
@@ -245,6 +259,35 @@ var Store = (function () {
     return sh;
   }
 
+  function ensureHolidaySheet_(ss) {
+    var sh = ss.getSheetByName('Holidays');
+    if (sh) return sh;
+    sh = ss.insertSheet('Holidays');
+    var h = STORE_SHEETS.Holidays, seed = holidaySeed_();
+    sh.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    sh.getRange(2, 1, seed.length, 1).setNumberFormat('@'); // เก็บเป็นข้อความ YYYY-MM-DD
+    sh.getRange(2, 1, seed.length, h.length).setValues(seed);
+    return sh;
+  }
+
+  /** ชีต Holidays → { 'YYYY-MM-DD': 'ชื่อวันหยุด' } (สร้างชีต + seed ให้ถ้ายังไม่มี) */
+  function readHolidays() {
+    var cache = CacheService.getScriptCache();
+    var hit = cache.get('store:holidays');
+    if (hit) return JSON.parse(hit);
+    var sh = ensureHolidaySheet_(open_());
+    var map = {}, last = sh.getLastRow();
+    if (last > 1) {
+      sh.getRange(2, 1, last - 1, 2).getValues().forEach(function (r) {
+        var d = r[0] instanceof Date ? Utilities.formatDate(r[0], 'Asia/Bangkok', 'yyyy-MM-dd') : String(r[0]).trim().slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(d)) map[d] = String(r[1] || 'วันหยุด');
+      });
+    }
+    cache.put('store:holidays', JSON.stringify(map), 60);
+    return map;
+  }
+
   /** ชีต Criteria → { 'SPECIAL|CLOSED': ['เกณฑ์1', ...] } (สร้างชีต + seed ให้ถ้ายังไม่มี) */
   function readCriteria() {
     var cache = CacheService.getScriptCache();
@@ -295,6 +338,12 @@ var Store = (function () {
       var cs = criteriaSeed_();
       ss.getSheetByName('Criteria').getRange(2, 1, cs.length, cs[0].length).setValues(cs);
     }
+    var hs = ss.getSheetByName('Holidays');
+    if (hs.getLastRow() < 2) {
+      var hseed = holidaySeed_();
+      hs.getRange(2, 1, hseed.length, 1).setNumberFormat('@');
+      hs.getRange(2, 1, hseed.length, hseed[0].length).setValues(hseed);
+    }
     var st = ss.getSheetByName('Settings');
     if (st.getLastRow() < 2) {
       var seed = settingsSeed_();
@@ -313,6 +362,7 @@ var Store = (function () {
     logRun: logRun,
     readRuns: readRuns,
     readCriteria: readCriteria,
+    readHolidays: readHolidays,
     readCaseReviews: readCaseReviews,
     upsertCaseReviews: upsertCaseReviews,
     ensure: ensure
