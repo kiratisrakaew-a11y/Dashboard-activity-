@@ -84,10 +84,35 @@
     cfg.options.onClick = function (evt, els) {
       if (els && els.length) { var i = els[0].index, ds = els[0].datasetIndex; setTimeout(function () { onPick(i, ds); }, 0); }
     };
-    cfg.options.onHover = function (evt, els) {
-      var t = evt.native && evt.native.target; if (t) t.style.cursor = els && els.length ? 'pointer' : 'default';
+    cfg.options.onHover = function (evt, els, ch) {
+      var t = evt.native && evt.native.target;
+      if (t) t.style.cursor = (els && els.length) || labelIndexAt(ch, evt) != null ? 'pointer' : 'default';
     };
+    // คลิกที่ชื่อแกน (นอกพื้นที่กราฟ — onClick ไม่ถูกเรียก) → ใช้ event ของ plugin; แถวที่ไม่มีแท่งก็คลิกได้
+    cfg.plugins = (cfg.plugins || []).concat([{ id: 'labelClick', afterEvent: function (ch, args) {
+      var e = args.event;
+      if (e.type !== 'click') return;
+      var li = labelIndexAt(ch, e);
+      if (li != null) setTimeout(function () { onPick(li); }, 0);
+    } }]);
     return cfg;
+  }
+  /** index ของแถว เมื่อเมาส์อยู่บนป้ายชื่อแกน y ของกราฟแนวนอน */
+  function labelIndexAt(ch, evt) {
+    if (!ch || ch.options.indexAxis !== 'y' || !ch.scales.y || evt.x == null) return null;
+    var a = ch.chartArea;
+    if (evt.x >= a.left || evt.y < a.top || evt.y > a.bottom) return null;
+    var i = Math.round(ch.scales.y.getValueForPixel(evt.y));
+    return i >= 0 && i < ch.data.labels.length ? i : null;
+  }
+  /** plugin เขียนข้อความในแถวที่ไม่มีแท่ง (notes[i] = ข้อความ หรือ '') */
+  function rowNotes(notes) {
+    return { id: 'rowNotes', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx, y = ch.scales.y; if (!y) return;
+      ctx.save(); ctx.font = 'italic 12px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle'; ctx.fillStyle = cssVar('--muted');
+      notes.forEach(function (t, i) { if (t) ctx.fillText(t, ch.chartArea.left + 8, y.getPixelForValue(i)); });
+      ctx.restore();
+    } };
   }
   function hbar(id, obj, labeler, onPick) {
     var e = sortedEntries(obj);
@@ -626,13 +651,24 @@
     // สรุปราย Buyer (เฉพาะ Case ที่ปิดแล้วในช่วง)
     var byBuyer = {};
     closed.forEach(function (c) { (byBuyer[c.buyer] = byBuyer[c.buyer] || []).push(c.duration.workMinutes); });
-    var buyers = Object.keys(byBuyer).map(function (b) {
-      var xs = byBuyer[b];
-      return { email: b, n: xs.length, avg: xs.reduce(function (s, x) { return s + x; }, 0) / xs.length, max: Math.max.apply(null, xs) };
-    }).sort(function (a, b) { return b.avg - a.avg; });
-    if (durBuyer && !buyers.some(function (b) { return b.email === durBuyer; }) &&
-        !ongoing.some(function (c) { return c.buyer === durBuyer; })) durBuyer = '';
-    var list = closed.concat(ongoing).filter(function (c) { return !durBuyer || c.buyer === durBuyer; }).sort(byDur);
+    // แสดง Buyer ทุกคนที่มี Case (ตามตัวกรอง Method) — คนที่ยังไม่มี Case ที่ปิด/วัดได้ จะมีข้อความบอกสถานะแทนแท่ง
+    var owners = {};
+    D.cases.forEach(function (c) { if (c.buyer && (!durMethod || c.method === durMethod)) owners[c.buyer] = 1; });
+    var buyers = Object.keys(owners).map(function (b) {
+      var xs = byBuyer[b] || [];
+      var cnt = function (arr) { return arr.filter(function (c) { return c.buyer === b; }).length; };
+      return { email: b, n: xs.length, avg: xs.length ? xs.reduce(function (s, x) { return s + x; }, 0) / xs.length : null,
+        max: xs.length ? Math.max.apply(null, xs) : null, ongoing: cnt(ongoing), unmeasured: cnt(unmeasured) };
+    }).sort(function (a, b) { return (b.avg == null ? -1 : b.avg) - (a.avg == null ? -1 : a.avg) || nameOf(a.email).localeCompare(nameOf(b.email)); });
+    function statusNote(b) {
+      if (b.n) return '';
+      var parts = [];
+      if (b.unmeasured) parts.push('ปิดแล้วแต่วัดไม่ได้ ' + b.unmeasured);
+      if (b.ongoing) parts.push('กำลังดำเนินการ ' + b.ongoing);
+      return 'ยังไม่มี Case ที่ปิดในช่วงนี้' + (parts.length ? ' · ' + parts.join(' · ') : '');
+    }
+    if (durBuyer && !buyers.some(function (b) { return b.email === durBuyer; })) durBuyer = '';
+    var list = closed.concat(ongoing).concat(unmeasured).filter(function (c) { return !durBuyer || c.buyer === durBuyer; }).sort(byDur);
 
     var h = '<div class="filters">' + periodBar('dur', durPeriod) +
       '<div class="seg" id="durMethod">' + [['', 'ทุก Method'], ['NORMAL', 'NORMAL'], ['SPECIAL', 'SPECIAL']].map(function (m) {
@@ -654,7 +690,7 @@
     h += '<div class="card" style="margin-top:12px"><div class="card-head"><h3>เวลาเฉลี่ยต่อ Case ราย Buyer (Case ที่ปิดแล้ว' + esc(mLabel) + ')</h3>' +
         '<button class="btn ghost" id="durAll"' + (durBuyer ? '' : ' disabled') + '>ดูทุกคน</button></div>' +
         '<div class="chart-box" style="height:' + Math.max(160, buyers.length * 46 + 50) + 'px"><canvas id="chDurBuyer"></canvas></div>' +
-        '<p class="small muted">คลิกที่แท่งเพื่อดู Case ของคนนั้นในกราฟด้านล่าง</p></div>';
+        '<p class="small muted">คลิกที่แท่งหรือชื่อเพื่อดู Case ของคนนั้นในกราฟด้านล่าง · แสดง Buyer ทุกคนที่มี Case (คนที่ยังไม่มี Case ที่ปิด/วัดได้ จะมีข้อความบอกสถานะ)</p></div>';
     h += '<div class="card" style="margin-top:12px"><h3>Case ของ ' + esc(durBuyer ? nameOf(durBuyer) : 'ทุกคน') + esc(mLabel) + ' — เรียงจากใช้เวลานานสุด <span class="muted">(' + list.length + ')</span></h3>' +
         '<div class="chart-box" style="height:' + Math.max(160, list.length * 34 + 60) + 'px"><canvas id="chDurCase"></canvas></div>' +
         '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>ปิดแล้ว NORMAL' +
@@ -672,11 +708,11 @@
     var hours = function (m) { return Math.round(m / 6) / 10; };   // แกนเป็นชั่วโมง ทศนิยม 1 ตำแหน่ง
     var axis = { beginAtZero: true, title: { display: true, text: 'ชั่วโมงทำงาน' }, ticks: { callback: function (v) { return fmt(v); } } };
     if (buyers.length) {
-      chart('chDurBuyer', pickable({ type: 'bar', data: { labels: buyers.map(function (b) { return nameOf(b.email) + ' (' + b.n + ' Case)'; }),
+      chart('chDurBuyer', pickable({ type: 'bar', plugins: [rowNotes(buyers.map(statusNote))], data: { labels: buyers.map(function (b) { return nameOf(b.email) + ' (' + b.n + ' Case)'; }),
         datasets: [{ data: buyers.map(function (b) { return hours(b.avg); }), borderRadius: 4,
           backgroundColor: buyers.map(function (b) { return !durBuyer || b.email === durBuyer ? cssVar('--accent') : cssVar('--muted'); }) }] },
         options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
-          tooltip: { callbacks: { label: function (ctx) { var b = buyers[ctx.dataIndex];
+          tooltip: { filter: function (it) { return buyers[it.dataIndex].n > 0; }, callbacks: { label: function (ctx) { var b = buyers[ctx.dataIndex];
             return ['เฉลี่ย ' + fmtDur(b.avg) + ' (≈ ' + fmt(b.avg / wd, 1) + ' วันทำการ)', 'นานสุด ' + fmtDur(b.max) + ' · ' + b.n + ' Case']; } } } },
           scales: { x: axis } } },
       function (i) { durBuyer = buyers[i].email; renderDuration(); }));
@@ -684,7 +720,9 @@
       $('chDurBuyer').parentNode.innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ไม่มี Case ที่ปิดในช่วงนี้</div>';
     }
     if (list.length) {
-      chart('chDurCase', pickable({ type: 'bar', data: {
+      chart('chDurCase', pickable({ type: 'bar', plugins: [rowNotes(list.map(function (c) {
+        return !c.duration.ongoing && !c.duration.measurable ? 'วัดไม่ได้ — มีแค่ Activity CLOSED (ไม่มี Activity ก่อนหน้า)' : '';
+      }))], data: {
         labels: list.map(function (c) { var t = c.ref || ''; return c.id.replace(/^[A-Z]+-\d{4}-/, '') + ' · ' + (t.length > 30 ? t.slice(0, 30) + '…' : t) + (durBuyer ? '' : ' · ' + nameOf(c.buyer)); }),
         datasets: [{ data: list.map(function (c) { return hours(c.duration.workMinutes); }), borderRadius: 4,
           backgroundColor: list.map(function (c) { return c.duration.ongoing ? fade(cssVar('--muted')) : (c.method === 'SPECIAL' ? cssVar('--warn') : cssVar('--accent')); }) }] },
@@ -715,12 +753,13 @@
       return o;
     }
     var groups = {};
+    D.cases.forEach(function (c) { if (c.buyer) groups[c.buyer] = groups[c.buyer] || []; });
     closedAll.forEach(function (c) { (groups[c.buyer] = groups[c.buyer] || []).push(c); });
     var rows = Object.keys(groups).map(function (b) { return { email: b, name: nameOf(b), s: stat(groups[b]) }; })
       .sort(function (a, b) { return a.name.localeCompare(b.name); });
     if (rows.length) rows.unshift({ email: null, name: 'รวมทั้งทีม', s: stat(closedAll), team: true });
     $('durMBox').style.height = Math.max(160, rows.length * 56 + 60) + 'px';
-    if (!rows.length) {
+    if (!closedAll.length) {
       $('durMBox').innerHTML = '<div class="muted" style="padding:30px 0;text-align:center">ไม่มี Case ที่ปิดในช่วงนี้</div>';
       return;
     }
@@ -732,6 +771,7 @@
       methods.forEach(function (m, di) {
         ch.getDatasetMeta(di).data.forEach(function (el, i) {
           var x = rows[i].s[m];
+          if (!rows[i].s.NORMAL.n && !rows[i].s.SPECIAL.n) return;   // ทั้งแถวว่าง → ใช้ข้อความ rowNotes แทน
           ctx.fillText(x.n ? fmtDur(x.avg) + ' (' + x.n + ')' : '–', el.x + 5, el.y);
         });
       });
@@ -742,7 +782,9 @@
         return { label: m, data: rows.map(function (r) { return hours(r.s[m].avg) || 0; }), borderRadius: 3,
           backgroundColor: rows.map(function (r) { return r.team ? fade(colors[m]) : colors[m]; }) };
       }) },
-      plugins: [endLabel],
+      plugins: [endLabel, rowNotes(rows.map(function (r) {
+        return r.s.NORMAL.n || r.s.SPECIAL.n ? '' : 'ยังไม่มี Case ที่ปิดและวัดเวลาได้ในช่วงนี้';
+      }))],
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
         tooltip: { callbacks: {
           title: function (it) { return rows[it[0].dataIndex].name + ' — ' + it[0].dataset.label; },
@@ -750,7 +792,14 @@
             return x.n ? ['เฉลี่ย ' + fmtDur(x.avg) + ' (≈ ' + fmt(x.avg / wd, 1) + ' วันทำการ)', 'นานสุด ' + fmtDur(x.max) + ' · ' + x.n + ' Case'] : 'ไม่มี Case'; } } } },
         scales: { x: { beginAtZero: true, grace: '30%', title: { display: true, text: 'ชั่วโมงทำงาน (เฉลี่ย)' } } } } },
     function (i, ds) {
-      var r = rows[i], m = methods[ds], x = r.s[m];
+      var r = rows[i];
+      if (ds == null) {   // คลิกที่ชื่อ → ทุก Case ของคนนั้น (ทั้ง 2 แบบ)
+        var all = r.s.NORMAL.cases.concat(r.s.SPECIAL.cases);
+        if (!all.length) all = D.cases.filter(function (c) { return c.buyer === r.email && c.duration; });
+        return drill('ระยะเวลา · ' + r.name, all.sort(function (a, b) { return b.duration.workMinutes - a.duration.workMinutes; }), 'case', null, true,
+          { extra: { th: 'ใช้เวลา (เวลาทำงาน)', td: durTd } });
+      }
+      var m = methods[ds], x = r.s[m];
       drill('ระยะเวลา ' + m + ' · ' + r.name + ' · ' + durDrill.period.replace(/ · (NORMAL|SPECIAL)$/, ''), x.cases, 'case', null, true,
         { note: x.n ? 'เฉลี่ย <b>' + fmtDur(x.avg) + '</b> ต่อ Case (เวลาทำงาน) จาก ' + x.n + ' Case ที่ปิดแล้ว' : 'ไม่มี Case ' + m + ' ที่ปิดในช่วงนี้',
           extra: { th: 'ใช้เวลา (เวลาทำงาน)', td: durTd } });
@@ -867,12 +916,29 @@
 
   // ---------- การขอราคาเทียบ (จำนวน Vendor ต่อ Case) ----------
   function vNum(v) { return v == null ? '–' : fmt(v, 1); }
+  function specialOnlyNote(email) {
+    var sp = D.cases.filter(function (c) { return c.buyer === email && c.method === 'SPECIAL'; }).length;
+    return 'ไม่มีงาน NORMAL' + (sp ? ' (มีแต่ SPECIAL ' + sp + ' Case)' : '');
+  }
+  function drillQuotes(email) {
+    var mq = D.settings.MIN_QUOTES;
+    var list = D.cases.filter(function (c) { return c.method === 'NORMAL' && c.activityCount > 0 && (!email || c.buyer === email); })
+      .sort(function (a, b) { return a.vendorsContacted - b.vendorsContacted; });
+    drill('การขอราคาเทียบ (NORMAL) · ' + (email ? nameOf(email) : 'รวมทั้งทีม'), list, 'case', email ? { buyer: email, method: 'NORMAL', status: '' } : null, true,
+      { note: list.length ? 'เกณฑ์ขั้นต่ำ ' + mq + ' ราย ต่อ Case · เรียงจากขอราคาน้อยสุด' : (email ? specialOnlyNote(email) + ' — งาน SPECIAL ไม่ต้องมีคู่เทียบ' : 'ไม่มีงาน NORMAL'),
+        extra: { th: 'ขอราคา (ราย)', td: function (c) {
+          return '<span class="badge ' + (c.vendorsContacted >= mq ? 'good' : (c.hasClosedActivity ? 'bad' : 'warn')) + '">' + c.vendorsContacted + ' ราย</span>' +
+            '<div class="muted">ต่อรอง ' + c.vendorsNegotiated + ' ราย' + (c.hasClosedActivity ? ' · สรุปผลแล้ว' : '') + '</div>'; } } });
+  }
   function vendorRow(name, v, email, bold) {
     var b = bold ? ['<b>', '</b>'] : ['', ''];
     var mq = D.settings.MIN_QUOTES, n = v.normal;
+    if (!bold && !n.cases) {
+      return '<tr class="clickable" data-quotes="' + esc(email) + '"><td>' + esc(name) + '</td><td colspan="4" class="small muted">' + esc(specialOnlyNote(email)) + '</td></tr>';
+    }
     var avgCls = n.avgContacted == null ? '' : (n.avgContacted >= mq ? 'good' : 'warn');
     var met = n.cases ? fmt(n.metMin) + ' / ' + fmt(n.cases) : '–';
-    return '<tr' + (bold ? ' style="background:var(--surface-2)"' : '') + '><td>' + b[0] + esc(name) + b[1] + '</td>' +
+    return '<tr class="clickable" data-quotes="' + esc(email || '') + '"' + (bold ? ' style="background:var(--surface-2)"' : '') + '><td>' + b[0] + esc(name) + b[1] + '</td>' +
       '<td class="num">' + (n.cases ? fmt(n.cases) : '–') + '</td>' +
       '<td class="num">' + (n.avgContacted == null ? '–' : '<span class="badge ' + avgCls + '">' + vNum(n.avgContacted) + ' ราย</span>') + '</td>' +
       '<td class="num">' + met + '</td>' +
@@ -880,8 +946,8 @@
   }
   function vendorSection() {
     var mq = D.settings.MIN_QUOTES;
-    var list = D.buyers.filter(function (b) { return b.vendorStats && b.vendorStats.normal.cases; })
-      .sort(function (a, b) { return b.vendorStats.normal.avgContacted - a.vendorStats.normal.avgContacted; });
+    var list = D.buyers.filter(function (b) { return b.vendorStats && b.totalCases; })
+      .sort(function (a, b) { return (b.vendorStats.normal.avgContacted || -1) - (a.vendorStats.normal.avgContacted || -1); });
     return '<h2>การขอราคาเทียบ — งาน NORMAL</h2>' +
       '<p class="small muted" style="margin-top:-4px">งานจัดซื้อปกติ (NORMAL) ควรขอราคาจาก Vendor อย่างน้อย <b>' + mq + ' ราย</b> ต่อ Case (ไม่รวมงาน SPECIAL)</p>' +
       '<div class="grid cols-2"><div class="card table-wrap"><table><thead><tr><th>Buyer</th>' +
@@ -891,15 +957,15 @@
         '<tr><td colspan="5" class="muted">ยังไม่มีงาน NORMAL</td></tr>') +
       (D.vendorStats && D.vendorStats.normal.cases ? vendorRow('รวมทั้งทีม', D.vendorStats, '', true) : '') +
       '</tbody></table><p class="small muted">นับ Vendor ไม่ซ้ำจากช่อง Vendor ของทุก Activity ใน Case (เฉพาะ Case ที่มี Activity) · ' +
-      'สีเขียว = เฉลี่ยถึงเกณฑ์ · สีเหลือง = ต่ำกว่าเกณฑ์ · คลิกตัวเลขสีแดงเพื่อดูรายการ Case</p></div>' +
+      'สีเขียว = เฉลี่ยถึงเกณฑ์ · สีเหลือง = ต่ำกว่าเกณฑ์ · คลิกแถวเพื่อดู Case และจำนวน Vendor ที่ขอราคา · คลิกตัวเลขสีแดงเพื่อไปแท็บ Cases</p></div>' +
       '<div class="card"><h3>งาน NORMAL: ขอราคาเฉลี่ยกี่ราย ต่อ Case</h3><div class="chart-box"><canvas id="chVendorBuyer"></canvas></div>' +
-      '<p class="small muted">เส้นประ = เกณฑ์ขั้นต่ำ ' + mq + ' ราย · แท่งเขียว = ถึงเกณฑ์ · แท่งส้ม = ต่ำกว่าเกณฑ์ · แท่งเทา = ค่าทั้งทีม</p></div></div>';
+      '<p class="small muted">เส้นประ = เกณฑ์ขั้นต่ำ ' + mq + ' ราย · แท่งเขียว = ถึงเกณฑ์ · แท่งส้ม = ต่ำกว่าเกณฑ์ · แท่งเทา = ค่าทั้งทีม · คลิกแท่งหรือชื่อเพื่อดูรายการ Case</p></div></div>';
   }
   function renderVendorChart() {
     var mq = D.settings.MIN_QUOTES;
-    var rows = D.buyers.filter(function (b) { return b.vendorStats && b.vendorStats.normal.cases; })
-      .map(function (b) { return { name: b.name, n: b.vendorStats.normal, team: false }; })
-      .sort(function (a, b) { return b.n.avgContacted - a.n.avgContacted; });
+    var rows = D.buyers.filter(function (b) { return b.vendorStats && b.totalCases; })
+      .map(function (b) { return { name: b.name, email: b.email, n: b.vendorStats.normal, team: false }; })
+      .sort(function (a, b) { return (b.n.avgContacted || -1) - (a.n.avgContacted || -1); });
     if (D.vendorStats && D.vendorStats.normal.cases) rows.push({ name: 'รวมทั้งทีม', n: D.vendorStats.normal, team: true });
     var minLine = {
       id: 'minLine',
@@ -911,14 +977,16 @@
         ctx.fillText('เกณฑ์ ' + mq + ' ราย', x + 4, area.top + 10); ctx.restore();
       }
     };
-    chart('chVendorBuyer', { type: 'bar', plugins: [minLine], data: { labels: rows.map(function (r) { return r.name; }), datasets: [{
-      data: rows.map(function (r) { return r.n.avgContacted; }),
+    chart('chVendorBuyer', pickable({ type: 'bar', plugins: [minLine, rowNotes(rows.map(function (r) { return r.n.cases ? '' : specialOnlyNote(r.email); }))],
+      data: { labels: rows.map(function (r) { return r.name; }), datasets: [{
+      data: rows.map(function (r) { return r.n.avgContacted || 0; }),
       backgroundColor: rows.map(function (r) { return r.team ? cssVar('--muted') : (r.n.avgContacted >= mq ? cssVar('--good') : cssVar('--warn')); }),
       borderRadius: 4 }] },
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
-        tooltip: { callbacks: { label: function (ctx) { var n = rows[ctx.dataIndex].n;
+        tooltip: { filter: function (it) { return rows[it.dataIndex].n.cases > 0; }, callbacks: { label: function (ctx) { var n = rows[ctx.dataIndex].n;
           return 'เฉลี่ย ' + vNum(n.avgContacted) + ' ราย/Case · ครบเกณฑ์ ' + n.metMin + '/' + n.cases + ' Case'; } } } },
-        scales: { x: { beginAtZero: true, suggestedMax: mq + 1, ticks: { precision: 0, callback: function (v) { return v + ' ราย'; } } } } } });
+        scales: { x: { beginAtZero: true, suggestedMax: mq + 1, ticks: { precision: 0, callback: function (v) { return v + ' ราย'; } } } } } },
+    function (i) { drillQuotes(rows[i].team ? null : rows[i].email); }));
   }
 
   function apcOf(email) {
@@ -951,6 +1019,9 @@
       apcMethod = b.dataset.m;
       this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
       renderApcChart();
+    });
+    $('tab-buyers').querySelectorAll('[data-quotes]').forEach(function (tr) {
+      tr.addEventListener('click', function (e) { if (!e.target.closest('[data-fewquotes]')) drillQuotes(tr.dataset.quotes || null); });
     });
     $('tab-buyers').querySelectorAll('[data-fewquotes]').forEach(function (el) {
       el.addEventListener('click', function (e) {
