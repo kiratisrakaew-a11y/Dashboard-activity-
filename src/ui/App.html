@@ -1129,7 +1129,8 @@
           '</td><td>' + caseBadge(c) + '</td><td class="small desc">' + esc(c.caseReview.summary) + '</td><td class="small">' + esc(c.caseReview.nextStep) + '</td></tr>';
       }).join('') + '</tbody></table></div>' : '<div class="card muted">ไม่มี</div>');
     h += '<div class="filters" style="margin-top:12px"><button class="btn" id="btnBatch">ตรวจรายการที่ค้างตอนนี้ (Activity ≤ ' + D.settings.BATCH_SIZE + ', Case ≤ ' + D.settings.CASE_BATCH_SIZE + ')</button>' +
-      '<span class="small muted">Provider: <b>' + esc(D.settings.AI_PROVIDER) + '</b> · ' + esc(D.settings.AI_MODEL) + ' · ตรวจอัตโนมัติทุกชั่วโมง</span></div>';
+      '<button class="btn ghost" id="btnResetAll" title="ให้ AI ตรวจทุก Activity และทุก Case ที่สรุปผลแล้วใหม่ทั้งหมด">↻ ตรวจใหม่ทั้งหมด</button>' +
+      '<span class="small muted">Provider: <b>' + esc(D.settings.AI_PROVIDER) + '</b> · ' + esc(D.settings.AI_MODEL) + ' · ตรวจอัตโนมัติทุกชั่วโมง (ถ้ายังค้าง จะตรวจต่อทุก ~2 นาทีจนครบ)</span></div>';
     h += '<div class="grid cols-2"><div class="card"><h3>คะแนนเฉลี่ยตามประเภท Activity</h3><div class="chart-box"><canvas id="chType"></canvas></div></div>' +
       '<div class="card"><h3>เกณฑ์ที่ขาดบ่อยที่สุด</h3>' + topMissing(reviewed) + '</div></div>';
     h += '<h2>รายการที่ควรปรับปรุง (คะแนน &lt; ' + th + ')</h2>' + actTable(low, 'ไม่มีรายการต่ำกว่าเกณฑ์');
@@ -1144,6 +1145,18 @@
     chart('chType', { type: 'bar', data: { labels: te, datasets: [{ data: te.map(function (k) { return ai.byType[k]; }),
       backgroundColor: te.map(function (k) { return cssVar('--' + (scoreClass(ai.byType[k]) || 'accent')); }), borderRadius: 4 }] },
       options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { min: 0, max: 100 } } } });
+    $('btnResetAll').addEventListener('click', function (e) {
+      var nCases = D.cases.filter(function (c) { return c.activityCount && c.caseReviewEligible; }).length;
+      var ok = window.confirm('ให้ AI ตรวจใหม่ทั้งหมด?\n\n• ' + D.activities.length + ' Activity\n• ' + nCases + ' Case ที่สรุปผลแล้ว\n\n' +
+        'จะใช้ API ตามจำนวนนี้ · ผลเดิมยังแสดง (ติด *) จนกว่าผลใหม่จะแทนที่ · ระบบจะตรวจต่อเนื่องทุก ~2 นาทีจนครบ (กด ↻ รีเฟรช เพื่อดูความคืบหน้า)');
+      if (!ok) return;
+      var b = e.target; b.disabled = true; b.textContent = 'กำลังตั้งค่า…';
+      call('apiResetReviews').then(function (json) {
+        var r = JSON.parse(json);
+        toast('เริ่มตรวจใหม่: ' + r.activities + ' Activity, ' + r.cases + ' Case — ระบบจะทยอยตรวจจนครบ');
+        load(true);
+      }).catch(function (err) { toast('ไม่สำเร็จ: ' + err.message); b.disabled = false; b.textContent = '↻ ตรวจใหม่ทั้งหมด'; });
+    });
     $('btnBatch').addEventListener('click', function (e) {
       var b = e.target; b.disabled = true; b.textContent = 'กำลังตรวจ… (อาจใช้เวลาหลายนาที)';
       call('apiRunBatch').then(function (json) {

@@ -125,3 +125,28 @@ test('caseReviewEligible_: ตรวจทั้ง Case เมื่อมี A
   assert.equal(G.pendingCases_([CASE], { C1: [A1] }, {}, 'v').length, 0);
   assert.equal(G.pendingCases_([CASE], { C1: [A1, A2] }, {}, 'v').length, 1);
 });
+
+test('withEpoch_ + needsCatchUp_: "ตรวจใหม่ทั้งหมด" ทำให้รายการที่ตรวจแล้วกลับมารอตรวจ และตรวจต่อเนื่องจนครบ', () => {
+  assert.equal(G.withEpoch_('v', { REVIEW_EPOCH: '' }), 'v');
+  assert.equal(G.withEpoch_('v', {}), 'v');
+  const v2 = G.withEpoch_('v', { REVIEW_EPOCH: 1760000000000 });
+  assert.notEqual(v2, 'v');
+  // Case ที่สรุปผลแล้วและตรวจแล้ว → พอเปลี่ยนรอบต้องกลับเข้าคิว; Case ที่ยังไม่สรุปผลยังไม่เข้า
+  const C2 = { ...CASE, Case_ID: 'C2' };
+  const B1 = { ...A1, Activity_ID: 'B1', Case_ID: 'C2', Activity_Type: 'CLOSED' };
+  const acts = { C1: [A1], C2: [B1] };
+  const reviewed = { C2: { hash: G.caseFingerprint_(C2, [B1], 'v') } };
+  assert.equal(G.pendingCases_([CASE, C2], acts, reviewed, 'v').length, 0);
+  assert.deepEqual(plain(G.pendingCases_([CASE, C2], acts, reviewed, v2).map(c => c.Case_ID)), ['C2']);
+  // Activity
+  const crit = 'cv';
+  const actRev = { [A1.Activity_ID]: { hash: G.activityFingerprint_(A1, crit, 'NORMAL') } };
+  assert.equal(G.pendingActivities_([A1], actRev, crit, { C1: 'NORMAL' }).length, 0);
+  assert.equal(G.pendingActivities_([A1], actRev, G.withEpoch_(crit, { REVIEW_EPOCH: 1 }), { C1: 'NORMAL' }).length, 1);
+  // ตรวจต่อเนื่อง
+  assert.equal(G.needsCatchUp_({ pending: 40, reviewed: 15, cases_pending: 0, cases_reviewed: 0 }), true);
+  assert.equal(G.needsCatchUp_({ pending: 10, reviewed: 10, cases_pending: 5, cases_reviewed: 2 }), true);
+  assert.equal(G.needsCatchUp_({ pending: 40, reviewed: 0, cases_pending: 5, cases_reviewed: 0 }), false); // ไม่มีความคืบหน้า (key/quota มีปัญหา)
+  assert.equal(G.needsCatchUp_({ pending: 3, reviewed: 3, cases_pending: 1, cases_reviewed: 1 }), false);
+  assert.equal(G.needsCatchUp_({ skipped: 'x' }), false);
+});

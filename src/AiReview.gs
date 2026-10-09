@@ -407,6 +407,19 @@ function validateCaseReview_(obj, criteria) {
   };
 }
 
+/** ต่อท้าย version ของเกณฑ์ด้วยรอบตรวจ (REVIEW_EPOCH) — เปลี่ยนรอบแล้วทุกรายการกลายเป็นรอตรวจ */
+function withEpoch_(ver, cfg) {
+  var e = cfg && cfg.REVIEW_EPOCH;
+  return (e === '' || e == null) ? ver : ver + '|e' + String(e);
+}
+
+/** หลังจบรอบ: ยังเหลือค้าง และรอบนี้มีความคืบหน้า → ควรตั้งรอบต่อไปเร็ว ๆ (กันวนไม่จบเมื่อ key/quota มีปัญหา) */
+function needsCatchUp_(run) {
+  if (!run || run.skipped) return false;
+  var left = (run.pending - run.reviewed) + ((run.cases_pending || 0) - (run.cases_reviewed || 0));
+  return left > 0 && (run.reviewed + (run.cases_reviewed || 0)) > 0;
+}
+
 // ============================ GAS orchestration ============================
 
 function loadReviewContext_() {
@@ -414,12 +427,13 @@ function loadReviewContext_() {
   var storeCriteria = Store.readCriteria();
   var cases = {};
   DbReader.readCases().forEach(function (c) { cases[c.Case_ID] = c; });
+  var cfg = getConfig_();
   return {
-    cfg: getConfig_(),
+    cfg: cfg,
     settings: settings,
     storeCriteria: storeCriteria,
-    critVer: criteriaVersion_(settings, storeCriteria),
-    caseCritVer: caseCriteriaVersion_(storeCriteria),
+    critVer: withEpoch_(criteriaVersion_(settings, storeCriteria), cfg),
+    caseCritVer: withEpoch_(caseCriteriaVersion_(storeCriteria), cfg),
     cases: cases,
     vendors: DbReader.readVendorsMap()
   };
@@ -483,7 +497,10 @@ function pendingActivities_(acts, reviews, critVer, methodByCase) {
  */
 function runAiBatch() {
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) return { skipped: 'มีรอบอื่นกำลังรันอยู่' };
+  if (!lock.tryLock(1000)) {
+    try { scheduleCatchUp_(); } catch (e0) { console.warn(e0.message); }   // รอบอื่นถืออยู่ → ลองใหม่อีกครั้งภายหลัง
+    return { skipped: 'มีรอบอื่นกำลังรันอยู่' };
+  }
   var started = Date.now();
   var run = { started_at: new Date().toISOString(), reviewed: 0, errors: 0, pending: 0,
     cases_pending: 0, cases_reviewed: 0, message: '' };
@@ -550,7 +567,39 @@ function runAiBatch() {
     try { Store.logRun(run); } catch (e3) { console.error(e3); }
     lock.releaseLock();
   }
+  // ยังเหลือค้าง → ตรวจต่ออีกรอบในไม่กี่นาที ไม่ต้องรอ trigger รายชั่วโมง
+  if (needsCatchUp_(run)) { try { scheduleCatchUp_(); } catch (e4) { console.warn(e4.message); } }
   return run;
+}
+
+/** trigger แบบครั้งเดียวสำหรับตรวจต่อเนื่อง (มีได้ทีละอัน) */
+function scheduleCatchUp_() {
+  var exists = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'runAiCatchUp'; });
+  if (!exists) ScriptApp.newTrigger('runAiCatchUp').timeBased().after(2 * 60 * 1000).create();
+}
+
+function runAiCatchUp() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runAiCatchUp') ScriptApp.deleteTrigger(t);
+  });
+  return runAiBatch();
+}
+
+/** ปุ่ม "ตรวจใหม่ทั้งหมด": เปลี่ยนรอบตรวจ แล้วเริ่มตรวจต่อเนื่อง (ผลเดิมยังแสดงจนกว่าจะถูกแทนที่) */
+function resetAllReviews_() {
+  Store.writeSettings({ REVIEW_EPOCH: String(Date.now()) });
+  configMemo_ = null;
+  var ctx = loadReviewContext_();
+  var allActs = DbReader.readActivities();
+  var methodByCase = {};
+  Object.keys(ctx.cases).forEach(function (id) { methodByCase[id] = ctx.cases[id].Method; });
+  var caseList = Object.keys(ctx.cases).map(function (id) { return ctx.cases[id]; });
+  var out = {
+    activities: pendingActivities_(allActs, Store.readReviews(), ctx.critVer, methodByCase).length,
+    cases: pendingCases_(caseList, groupActsByCase_(allActs), Store.readCaseReviews(), ctx.caseCritVer).length
+  };
+  scheduleCatchUp_();
+  return out;
 }
 
 /** ตรวจทั้ง Case ทันที (ปุ่ม "ตรวจทั้ง Case ใหม่" ใน UI) */

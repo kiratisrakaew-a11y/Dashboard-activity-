@@ -18,6 +18,7 @@ var DEFAULTS = {
   CASE_BATCH_SIZE: 10,            // จำนวน Case ที่ AI ตรวจทั้ง Case ต่อรอบ
   WORK_START: '08:00',            // เวลาเริ่มงาน (ใช้คิดระยะเวลา Case เป็นเวลาทำงาน)
   WORK_END: '17:00',              // เวลาเลิกงาน — ไม่นับ ส.–อา. และวันในชีต Holidays ของ AI Store
+  REVIEW_EPOCH: '',               // ปุ่ม "ตรวจใหม่ทั้งหมด" เปลี่ยนค่านี้ → fingerprint ทุกรายการเปลี่ยน → ตรวจใหม่ทั้งหมด
   CACHE_SECONDS: 300              // แคชข้อมูลที่อ่านจาก DB
 };
 
@@ -35,7 +36,8 @@ var API_KEY_PROPS = {
 
 /** คีย์ที่ HEAD เปลี่ยนได้จากหน้า UI (เก็บในชีต Settings ของ AI Store) */
 var EDITABLE_SETTINGS = ['AI_PROVIDER', 'AI_MODEL', 'AI_EFFORT', 'STALE_DAYS', 'SCORE_THRESHOLD',
-  'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CASE_BATCH_SIZE', 'WORK_START', 'WORK_END'];
+  'MIN_QUOTES', 'SHORT_DESC_CHARS', 'BATCH_SIZE', 'CASE_BATCH_SIZE', 'WORK_START', 'WORK_END',
+  'REVIEW_EPOCH'];
 
 var configMemo_ = null; // memo ต่อ 1 execution
 

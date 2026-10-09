@@ -33,7 +33,7 @@ function loadData_() {
   try { holidays = Store.readHolidays(); } catch (e) { console.warn(e.message); }
   var storeCriteria = {};
   try { storeCriteria = Store.readCriteria(); } catch (e) { console.warn(e.message); }
-  var critVer = criteriaVersion_(settings, storeCriteria);
+  var critVer = withEpoch_(criteriaVersion_(settings, storeCriteria), cfg);
   var methodByCase = {};
   cases.forEach(function (c) { methodByCase[c.Case_ID] = c.Method; });
   var reviews = {};
@@ -45,7 +45,7 @@ function loadData_() {
   // ผลตรวจทั้ง Case + ติดป้าย stale ถ้ามี Activity ใหม่/ถูกแก้หลังจากตรวจ
   var caseReviews = {};
   try { caseReviews = Store.readCaseReviews(); } catch (e) { console.warn(e.message); }
-  var caseCritVer = caseCriteriaVersion_(storeCriteria);
+  var caseCritVer = withEpoch_(caseCriteriaVersion_(storeCriteria), cfg);
   var actsByCase = groupActsByCase_(activities);
   cases.forEach(function (c) {
     var r = caseReviews[c.Case_ID];
@@ -113,6 +113,11 @@ function apiReviewCaseNow(caseId) {
 function apiRunBatch() {
   requireHead_();
   return JSON.stringify(runAiBatch());
+}
+
+function apiResetReviews() {
+  requireHead_();
+  return JSON.stringify(resetAllReviews_());
 }
 
 function apiSaveSettings(obj) {
