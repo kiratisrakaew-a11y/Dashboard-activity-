@@ -10,7 +10,8 @@
   try { var rp = JSON.parse(localStorage.getItem('dash.rankPeriod') || 'null'); if (rp && rp.unit) rankPeriod = rp; } catch (e) {}
   var durPeriod = { unit: 'month', date: '' };   // หน้า "ระยะเวลา"
   try { var dp = JSON.parse(localStorage.getItem('dash.durPeriod') || 'null'); if (dp && dp.unit) durPeriod = dp; } catch (e) {}
-  var durBuyer = '';                              // Buyer ที่เลือกในหน้า "ระยะเวลา" ('' = ทุกคน)       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
+  var durBuyer = '';
+  var apcMethod = '';                             // ตัวกรอง Method ของกราฟ Activity ต่อ Case ('' = ทั้งหมด)                              // Buyer ที่เลือกในหน้า "ระยะเวลา" ('' = ทุกคน)       // รายการล่าสุดที่เปิดจากกราฟ (ใช้ปุ่ม "กลับไปรายการ")
 
   // ---------------- helpers ----------------
   function $(id) { return document.getElementById(id); }
@@ -848,11 +849,16 @@
         scales: { x: { beginAtZero: true, suggestedMax: mq + 1, ticks: { precision: 0, callback: function (v) { return v + ' ราย'; } } } } } });
   }
 
+  function apcOf(email) {
+    var cs = D.cases.filter(function (c) { return c.buyer === email && c.activityCount > 0; });
+    return cs.length ? fmt(cs.reduce(function (s, c) { return s + c.activityCount; }, 0) / cs.length, 1) : '–';
+  }
   function renderBuyers() {
     var rows = D.buyers.map(function (b) {
       return '<tr class="clickable" data-buyer="' + esc(b.email) + '"><td><b>' + esc(b.name) + '</b><div class="small muted">' + esc(b.email) + '</div></td>' +
         '<td class="num">' + fmt(b.openCases) + '</td><td class="num">' + fmt(b.staleCases) + '</td>' +
         '<td class="num">' + fmt(b.activities7d) + '</td><td class="num">' + fmt(b.activitiesTotal) + '</td>' +
+        '<td class="num">' + apcOf(b.email) + '</td>' +
         '<td class="num">' + (b.overdue ? '<span class="badge bad">' + b.overdue + '</span>' : '0') + '</td>' +
         '<td class="num">' + fmt(b.forgotDone) + '</td>' +
         '<td class="num">' + (b.avgScore == null ? '–' : '<span class="badge ' + scoreClass(b.avgScore) + '">' + fmt(b.avgScore, 1) + '</span>') + '</td>' +
@@ -862,11 +868,18 @@
         '<td class="small">' + sortedEntries(b.channels).map(function (x) { return esc(x[0]) + ' ' + x[1]; }).join(', ') + '</td></tr>';
     }).join('');
     $('tab-buyers').innerHTML = '<div class="card table-wrap"><table><thead><tr><th>Buyer</th><th class="num">Case เปิด</th><th class="num">นิ่ง</th>' +
-      '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
+      '<th class="num">Activity 7 วัน</th><th class="num">Activity ทั้งหมด</th><th class="num">Activity / Case</th><th class="num">เลยกำหนด</th><th class="num">ลืม Done</th>' +
       '<th class="num">คะแนน AI</th><th class="num">ต่ำกว่าเกณฑ์</th><th class="num">วันถึง Activity แรก</th><th class="num">Savings (%)</th><th>ช่องทาง</th></tr></thead><tbody>' +
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
-    $('tab-buyers').innerHTML = negoSection() + vendorSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
+    $('tab-buyers').innerHTML = negoSection() + vendorSection() + apcSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML;
     renderVendorChart();
+    renderApcChart();
+    $('apcMethod').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      apcMethod = b.dataset.m;
+      this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+      renderApcChart();
+    });
     $('tab-buyers').querySelectorAll('[data-fewquotes]').forEach(function (el) {
       el.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -888,6 +901,87 @@
     $('tab-buyers').querySelectorAll('[data-buyer]').forEach(function (tr) {
       tr.addEventListener('click', function () { caseFilter.buyer = tr.dataset.buyer; caseFilter.flag = ''; renderCases(); showTab('cases'); });
     });
+  }
+
+  // ---------- Activity ต่อ Case ราย Buyer ----------
+  var APC_TYPES = ['CONTACT VENDOR', 'FOLLOW_UP', 'NEGOTIATION', 'CLOSED', 'OTHER'];
+  function actsByCaseType() {
+    var m = {};
+    D.activities.forEach(function (a) {
+      var t = APC_TYPES.indexOf(a.type) >= 0 ? a.type : 'OTHER';
+      var x = m[a.caseId] = m[a.caseId] || {};
+      x[t] = (x[t] || 0) + 1;
+    });
+    return m;
+  }
+  /** สรุปราย Buyer (นับเฉพาะ Case ที่มี Activity ตาม Buyer เจ้าของ Case) */
+  function apcStats() {
+    var byCase = actsByCaseType();
+    var types = APC_TYPES;
+    var cases = D.cases.filter(function (c) { return c.activityCount > 0 && (!apcMethod || c.method === apcMethod); });
+    function summarize(list) {
+      var n = list.length, tot = 0, per = {};
+      types.forEach(function (t) { per[t] = 0; });
+      list.forEach(function (c) { tot += c.activityCount; types.forEach(function (t) { per[t] += (byCase[c.id] || {})[t] || 0; }); });
+      var counts = list.map(function (c) { return c.activityCount; });
+      return { n: n, total: tot, avg: n ? tot / n : 0, per: per, min: n ? Math.min.apply(null, counts) : 0, max: n ? Math.max.apply(null, counts) : 0 };
+    }
+    var groups = {};
+    cases.forEach(function (c) { (groups[c.buyer] = groups[c.buyer] || []).push(c); });
+    var rows = Object.keys(groups).map(function (b) { var s = summarize(groups[b]); s.email = b; s.name = nameOf(b); s.cases = groups[b]; return s; })
+      .sort(function (a, b) { return b.avg - a.avg; });
+    var team = summarize(cases); team.name = 'รวมทั้งทีม'; team.team = true; team.cases = cases;
+    return { rows: rows, team: team, types: types, byCase: byCase,
+      noAct: D.cases.filter(function (c) { return !c.activityCount && (!apcMethod || c.method === apcMethod); }).length };
+  }
+  function apcSection() {
+    return '<h2>จำนวน Activity เฉลี่ยต่อ Case ราย Buyer</h2><div class="card"><div class="card-head"><h3>เฉลี่ยกี่ Activity ต่อ 1 Case (แยกประเภท)</h3>' +
+      '<div class="seg" id="apcMethod">' + [['', 'ทั้งหมด'], ['NORMAL', 'NORMAL'], ['SPECIAL', 'SPECIAL']].map(function (m) {
+        return '<button data-m="' + m[0] + '" class="' + (apcMethod === m[0] ? 'active' : '') + '">' + m[1] + '</button>'; }).join('') + '</div></div>' +
+      '<div class="chart-box" id="apcBox" style="height:300px"><canvas id="chApc"></canvas></div>' +
+      '<p class="small muted" id="apcNote"></p></div>';
+  }
+  /** สีเดียวกันแต่จางลง (ใช้กับแท่งค่าเฉลี่ยทั้งทีม) */
+  function fade(c) { return /^#[0-9a-f]{6}$/i.test(c) ? c + '66' : c; }
+  function renderApcChart() {
+    var st = apcStats();
+    var rows = st.rows.concat(st.rows.length ? [st.team] : []);
+    $('apcBox').style.height = Math.max(180, rows.length * 48 + 70) + 'px';
+    $('apcNote').innerHTML = '👆 คลิกที่แท่งเพื่อดู Case ของคนนั้นพร้อมจำนวน Activity แต่ละประเภท · นับตาม Buyer เจ้าของ Case · ' +
+      'ไม่นับ Case ที่ยังไม่มี Activity (' + fmt(st.noAct) + ' Case) · แท่งสีจาง = ค่าเฉลี่ยทั้งทีม';
+    if (!st.rows.length) { if (charts.chApc) { charts.chApc.destroy(); delete charts.chApc; } return; }
+    var colors = { 'CONTACT VENDOR': cssVar('--accent'), 'FOLLOW_UP': cssVar('--muted'), 'NEGOTIATION': cssVar('--warn'), 'CLOSED': cssVar('--good'), 'OTHER': '#8b6fd6' };
+    var total = { id: 'apcTotal', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx, last = ch.getDatasetMeta(ch.data.datasets.length - 1);
+      ctx.save(); ctx.font = '600 12px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle'; ctx.fillStyle = cssVar('--text');
+      rows.forEach(function (r, i) { var el = last.data[i]; if (el) ctx.fillText(fmt(r.avg, 1) + ' / Case (' + r.n + ' Case)', el.x + 6, el.y); });
+      ctx.restore();
+    } };
+    chart('chApc', pickable({ type: 'bar', data: { labels: rows.map(function (r) { return r.name; }),
+      datasets: st.types.map(function (t) {
+        return { label: t, data: rows.map(function (r) { return r.n ? Math.round(r.per[t] / r.n * 100) / 100 : 0; }),
+          backgroundColor: rows.map(function (r) { return r.team ? fade(colors[t]) : colors[t]; }), borderRadius: 3 };
+      }).filter(function (ds) { return ds.data.some(function (v) { return v > 0; }); }) },
+      plugins: [total],
+      options: { indexAxis: 'y', maintainAspectRatio: false, layout: { padding: { right: 10 } },
+        interaction: { mode: 'index', axis: 'y', intersect: true },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } },
+          tooltip: { callbacks: {
+            title: function (it) { var r = rows[it[0].dataIndex]; return r.name + ' — เฉลี่ย ' + fmt(r.avg, 1) + ' Activity / Case'; },
+            label: function (ctx) { return ' ' + ctx.dataset.label + ': ' + fmt(ctx.parsed.x, 2) + ' ต่อ Case'; },
+            footer: function (it) { var r = rows[it[0].dataIndex]; return r.n + ' Case · รวม ' + r.total + ' Activity · น้อยสุด ' + r.min + ' / มากสุด ' + r.max; } } } },
+        scales: { x: { stacked: true, beginAtZero: true, grace: '25%', title: { display: true, text: 'Activity ต่อ Case' } }, y: { stacked: true } } } },
+    function (i) {
+      var r = rows[i];
+      drill('Activity ต่อ Case · ' + r.name + (apcMethod ? ' (' + apcMethod + ')' : ''),
+        r.cases.slice().sort(function (a, b) { return b.activityCount - a.activityCount; }), 'case',
+        r.team ? null : { buyer: r.email, status: '', method: apcMethod }, true,
+        { note: 'เฉลี่ย <b>' + fmt(r.avg, 1) + '</b> Activity ต่อ Case จาก ' + r.n + ' Case (น้อยสุด ' + r.min + ', มากสุด ' + r.max + ')',
+          extra: { th: 'Activity (แยกประเภท)', td: function (c) {
+            var x = st.byCase[c.id] || {};
+            return '<b>' + c.activityCount + '</b> · ' + st.types.filter(function (t) { return x[t]; }).map(function (t) { return esc(t) + ' ' + x[t]; }).join(', ');
+          } } });
+    }));
   }
 
   // ---------------- cases ----------------
