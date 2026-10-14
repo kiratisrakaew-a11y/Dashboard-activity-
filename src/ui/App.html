@@ -4,7 +4,8 @@
   var D = null;               // dashboard payload
   var charts = {};
   var caseFilter = { buyer: '', dept: '', method: '', status: 'OPEN', flag: '', q: '' };
-  var methodScope = 'OPEN';   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
+  var methodScope = 'OPEN';
+  var valueScope = 'ALL';     // กราฟสัดส่วนมูลค่า NORMAL/SPECIAL: OPEN | ALL   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
   var lastDrill = null;
   var rankPeriod = { unit: 'month', date: '' };   // หน้า "จัดอันดับ" (date ว่าง = วันนี้)
   try { var rp = JSON.parse(localStorage.getItem('dash.rankPeriod') || 'null'); if (rp && rp.unit) rankPeriod = rp; } catch (e) {}
@@ -250,6 +251,10 @@
 
     h += '<div class="grid cols-2" style="margin-top:12px">' +
       '<div class="card"><h3>Case เปิดอยู่ตาม Buyer</h3><div class="chart-box"><canvas id="chBuyer"></canvas></div></div>' +
+      '<div class="card"><div class="card-head"><h3>สัดส่วนมูลค่าโครงการ NORMAL / SPECIAL</h3><div class="seg" id="valueScope">' +
+        '<button data-scope="OPEN" class="' + (valueScope === 'OPEN' ? 'active' : '') + '">เปิดอยู่</button>' +
+        '<button data-scope="ALL" class="' + (valueScope === 'ALL' ? 'active' : '') + '">ทั้งหมด</button></div></div>' +
+        '<div class="chart-box"><canvas id="chMethodValue"></canvas></div><div class="small muted" id="mvNote"></div></div>' +
       '<div class="card"><div class="card-head"><h3>สัดส่วน Case NORMAL / SPECIAL</h3><div class="seg" id="methodScope">' +
         '<button data-scope="OPEN" class="' + (methodScope === 'OPEN' ? 'active' : '') + '">เปิดอยู่</button>' +
         '<button data-scope="ALL" class="' + (methodScope === 'ALL' ? 'active' : '') + '">ทั้งหมด</button></div></div>' +
@@ -280,6 +285,13 @@
     renderNegoChart('chNegoOverview', drillNego);
     renderNegoPctChart('chNegoPctOverview', drillNego);
     renderMethodChart();
+    renderMethodValueChart();
+    $('valueScope').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      valueScope = b.dataset.scope;
+      this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+      renderMethodValueChart();
+    });
     $('methodScope').addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
       methodScope = b.dataset.scope;
@@ -323,6 +335,45 @@
   function pctLabel(ctx) {
     var total = ctx.dataset.data.reduce(function (s, v) { return s + v; }, 0);
     return ' ' + ctx.label + ': ' + fmt(ctx.parsed) + ' (' + (total ? fmt(ctx.parsed / total * 100, 1) : 0) + '%)';
+  }
+
+  /** สัดส่วนมูลค่าโครงการ (ราคาสุดท้าย → เสนอแรก → ประมาณการ) แยก NORMAL / SPECIAL */
+  function renderMethodValueChart() {
+    var pool = D.cases.filter(function (c) { return valueScope === 'ALL' || c.status === 'OPEN'; });
+    var keys = ['NORMAL', 'SPECIAL'];
+    var by = {};
+    keys.forEach(function (k) {
+      var cs = pool.filter(function (c) { return c.method === k; });
+      var valued = cs.filter(function (c) { return c.value; });
+      by[k] = { cases: cs, valued: valued, sum: valued.reduce(function (s, c) { return s + c.value.value; }, 0) };
+    });
+    var total = by.NORMAL.sum + by.SPECIAL.sum;
+    var noPrice = pool.filter(function (c) { return !c.value; }).length;
+    $('mvNote').textContent = 'มูลค่า = ราคาสุดท้าย (ถ้ายังไม่มีใช้ราคาเสนอแรก / ประมาณการ) · ยังไม่มีตัวเลขราคา ' + noPrice + ' Case (ไม่นับในสัดส่วน)';
+    if (!total) {
+      if (charts.chMethodValue) { charts.chMethodValue.destroy(); delete charts.chMethodValue; }
+      $('mvNote').textContent = 'ยังไม่มีตัวเลขราคา — รอ AI ดึงราคาจาก Activity';
+      return;
+    }
+    var colors = { NORMAL: cssVar('--accent'), SPECIAL: cssVar('--warn') };
+    chart('chMethodValue', pickable({ type: 'doughnut', data: {
+      labels: keys.map(function (k) {
+        return k + ' · ' + label('METHOD', k) + ' — ' + baht(Math.round(by[k].sum)) + ' (' + fmt(by[k].sum / total * 100, 0) + '%)';
+      }),
+      datasets: [{ data: keys.map(function (k) { return by[k].sum; }), backgroundColor: keys.map(function (k) { return colors[k]; }), borderColor: cssVar('--surface') }] },
+      options: { maintainAspectRatio: false, cutout: '55%', plugins: { legend: { position: 'bottom' },
+        tooltip: { callbacks: { label: function (ctx) { var x = by[keys[ctx.dataIndex]];
+          return [' ' + keys[ctx.dataIndex] + ': ' + baht(Math.round(x.sum)) + ' (' + fmt(x.sum / total * 100, 1) + '%)',
+            ' ' + x.valued.length + ' Case ที่มีราคา (จากทั้งหมด ' + x.cases.length + ' Case)',
+            ' เฉลี่ย ' + (x.valued.length ? baht(Math.round(x.sum / x.valued.length)) : '–') + ' ต่อ Case']; } } } } } },
+    function (i) {
+      var k = keys[i], x = by[k];
+      drill('มูลค่าโครงการ ' + k + (valueScope === 'ALL' ? ' (ทั้งหมด)' : ' ที่เปิดอยู่'),
+        x.cases.slice().sort(function (a, b) { return (b.value ? b.value.value : -1) - (a.value ? a.value.value : -1); }), 'case',
+        { method: k, status: valueScope === 'ALL' ? '' : 'OPEN' }, true,
+        { note: 'มูลค่ารวม <b>' + baht(Math.round(x.sum)) + '</b> จาก ' + x.valued.length + ' Case ที่มีราคา (ทั้งหมด ' + x.cases.length + ' Case)',
+          extra: { th: 'มูลค่า', td: valueTd } });
+    }));
   }
 
   function renderMethodChart() {
