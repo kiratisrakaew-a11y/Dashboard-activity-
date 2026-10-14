@@ -82,7 +82,11 @@
     cfg.options = cfg.options || {};
     // เลื่อนไปทำหลัง Chart.js จัดการ event เสร็จ — onPick อาจวาดกราฟนี้ใหม่ (destroy) ระหว่าง event
     cfg.options.onClick = function (evt, els) {
-      if (els && els.length) { var i = els[0].index, ds = els[0].datasetIndex; setTimeout(function () { onPick(i, ds); }, 0); }
+      if (!els || !els.length) return;
+      // กราฟแบบซ้อน/โหมด index คืนหลายชิ้น → เลือกชิ้นที่อยู่ใต้เมาส์จริง
+      var hit = els.filter(function (e) { return e.element && e.element.inRange && e.element.inRange(evt.x, evt.y); })[0] || els[0];
+      var i = hit.index, ds = hit.datasetIndex;
+      setTimeout(function () { onPick(i, ds); }, 0);
     };
     cfg.options.onHover = function (evt, els, ch) {
       var t = evt.native && evt.native.target;
@@ -1143,6 +1147,89 @@
     buyerPerf._d = D; buyerPerf._v = out;
     return out;
   }
+  // ---------- มูลค่ารวมของโครงการ ราย Buyer ----------
+  var bvState = { method: '', open: false };
+  function buyerValueSection() {
+    var seg = function (id, items, cur) {
+      return '<div class="seg" id="' + id + '">' + items.map(function (x) {
+        return '<button data-v="' + x[0] + '" class="' + (String(cur) === x[0] ? 'active' : '') + '">' + x[1] + '</button>'; }).join('') + '</div>';
+    };
+    return '<div class="card" style="margin-top:12px"><div class="card-head"><h3>มูลค่ารวมของโครงการ ราย Buyer</h3><div>' +
+      seg('bvMethod', [['', 'NORMAL + SPECIAL'], ['NORMAL', 'NORMAL'], ['SPECIAL', 'SPECIAL']], bvState.method) + ' ' +
+      seg('bvOpen', [['false', 'ทุก Case'], ['true', 'เฉพาะที่เปิดอยู่']], bvState.open) + '</div></div>' +
+      '<div class="chart-box" id="bvBox"><canvas id="chBuyerValue"></canvas></div>' +
+      '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>NORMAL' +
+      '<span class="legend-dot" style="background:' + cssVar('--warn') + '"></span>SPECIAL · ' +
+      'มูลค่า = ราคาสุดท้าย (ถ้ายังไม่มีใช้ราคาเสนอแรก / ประมาณการ) · ชี้ที่แท่งเพื่อดู Scorecard และงานที่เปิดอยู่ · คลิกแท่งหรือชื่อเพื่อดูรายการ Case</div></div>';
+  }
+  function renderBuyerValue() {
+    var perf = buyerPerf();
+    var ranked = Object.keys(perf).map(function (k) { return perf[k]; }).filter(function (p) { return p.total != null; })
+      .sort(function (a, b) { return b.total - a.total; });
+    var rankOf = {};
+    ranked.forEach(function (p, i) { rankOf[p.email] = i + 1; });
+    var methods = bvState.method ? [bvState.method] : ['NORMAL', 'SPECIAL'];
+    function pick(list) { return list.filter(function (c) { return (!bvState.open || c.status === 'OPEN') && methods.indexOf(c.method) >= 0; }); }
+    function sum(list, m) { return list.reduce(function (s, c) { return s + (c.value && (!m || c.method === m) ? c.value.value : 0); }, 0); }
+    var rows = D.buyers.filter(function (b) { return b.totalCases; }).map(function (b) {
+      var cs = pick(D.cases.filter(function (c) { return c.buyer === b.email; }));
+      return { email: b.email, name: b.name, b: b, cases: cs, valued: cs.filter(function (c) { return c.value; }),
+        normal: sum(cs, 'NORMAL'), special: sum(cs, 'SPECIAL'), total: sum(cs) };
+    }).sort(function (a, b) { return b.total - a.total || a.name.localeCompare(b.name); });
+    var all = pick(D.cases);
+    rows.push({ email: null, name: 'รวมทั้งทีม', team: true, cases: all, valued: all.filter(function (c) { return c.value; }),
+      normal: sum(all, 'NORMAL'), special: sum(all, 'SPECIAL'), total: sum(all) });
+    $('bvBox').style.height = Math.max(180, rows.length * 46 + 60) + 'px';
+    var colors = { NORMAL: cssVar('--accent'), SPECIAL: cssVar('--warn') };
+    var endLabel = { id: 'bvLabel', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx, metas = ch.data.datasets.map(function (d, i) { return ch.getDatasetMeta(i); });
+      ctx.save(); ctx.font = '600 12px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle'; ctx.fillStyle = cssVar('--text');
+      rows.forEach(function (r, i) {
+        if (!r.total) return;
+        var x = Math.max.apply(null, metas.map(function (m) { return m.data[i] ? m.data[i].x : 0; }));
+        ctx.fillText(baht(Math.round(r.total)) + ' (' + r.valued.length + ' Case)', x + 6, metas[0].data[i].y);
+      });
+      ctx.restore();
+    } };
+    chart('chBuyerValue', pickable({ type: 'bar',
+      plugins: [endLabel, rowNotes(rows.map(function (r) { return r.total ? '' : (r.cases.length ? 'ยังไม่มีตัวเลขราคา (' + r.cases.length + ' Case)' : 'ไม่มี Case ตามตัวกรองนี้'); }))],
+      data: { labels: rows.map(function (r) { return r.name; }), datasets: methods.map(function (m) {
+        return { label: m, data: rows.map(function (r) { return m === 'NORMAL' ? r.normal : r.special; }), borderRadius: 3,
+          backgroundColor: rows.map(function (r) { return r.team ? fade(colors[m]) : colors[m]; }) };
+      }) },
+      options: { indexAxis: 'y', maintainAspectRatio: false, interaction: { mode: 'index', axis: 'y', intersect: true },
+        plugins: { legend: { display: false },
+          tooltip: { displayColors: false, filter: function (it) { return it.datasetIndex === 0; }, callbacks: {
+            title: function (it) { return rows[it[0].dataIndex].name; },
+            label: function (ctx) {
+              var r = rows[ctx.dataIndex], out = [];
+              if (methods.indexOf('NORMAL') >= 0) out.push('NORMAL: ' + baht(Math.round(r.normal)));
+              if (methods.indexOf('SPECIAL') >= 0) out.push('SPECIAL: ' + baht(Math.round(r.special)));
+              out.push('รวม: ' + baht(Math.round(r.total)) + ' · มีราคา ' + r.valued.length + ' Case' +
+                (r.cases.length > r.valued.length ? ' (ยังไม่มีราคา ' + (r.cases.length - r.valued.length) + ')' : ''));
+              out.push('');
+              if (r.team) {
+                out.push('Case ที่เปิดอยู่ ' + D.cases.filter(function (c) { return c.status === 'OPEN'; }).length + ' · Activity ทั้งหมด ' + D.activities.length);
+              } else {
+                var p = perf[r.email];
+                out.push('Scorecard: ' + (p && p.total != null ? fmt(p.total, 1) + ' คะแนน (อันดับ #' + rankOf[r.email] + ' จาก ' + ranked.length + ')' : '–'));
+                out.push('Case ที่เปิดอยู่ ' + r.b.openCases + ' · Activity ทั้งหมด ' + r.b.activitiesTotal + ' · Activity 7 วันล่าสุด ' + r.b.activities7d);
+              }
+              return out;
+            } } } },
+        scales: { x: { stacked: true, beginAtZero: true, grace: '25%', ticks: { callback: function (v) { return fmt(v); } } }, y: { stacked: true } } } },
+    function (i, ds) {
+      var r = rows[i], m = ds == null ? null : methods[ds];
+      var list = r.cases.filter(function (c) { return !m || c.method === m; })
+        .sort(function (a, b) { return (b.value ? b.value.value : -1) - (a.value ? a.value.value : -1); });
+      var tot = list.reduce(function (s, c) { return s + (c.value ? c.value.value : 0); }, 0);
+      drill('มูลค่าโครงการ · ' + r.name + (m ? ' · ' + m : '') + (bvState.open ? ' (เปิดอยู่)' : ''), list, 'case',
+        r.team ? null : { buyer: r.email, method: m || bvState.method, status: bvState.open ? 'OPEN' : '' }, true,
+        { note: 'มูลค่ารวม <b>' + baht(Math.round(tot)) + '</b> จาก ' + list.filter(function (c) { return c.value; }).length + ' Case ที่มีราคา (ทั้งหมด ' + list.length + ' Case)',
+          extra: { th: 'มูลค่า', td: valueTd } });
+    }));
+  }
+
   function healthBadges(sev) {
     if (!(sev.high + sev.medium + sev.low)) return '0';
     return (sev.high ? '<span class="badge bad">' + sev.high + '</span> ' : '') + (sev.medium ? '<span class="badge warn">' + sev.medium + '</span> ' : '') +
@@ -1241,8 +1328,17 @@
       '<th class="num" title="% Next action ที่ครบกำหนดแล้วและไม่ค้าง">Next action ตรงเวลา</th><th class="num" title="ปัญหา Data Health: แดง=สูง เหลือง=กลาง เทา=ต่ำ">ปัญหาข้อมูล</th>' +
       '<th class="num">Scorecard</th><th>ช่องทาง</th></tr></thead><tbody>' +
       rows + '</tbody></table></div><p class="small muted">คลิกที่ Buyer เพื่อดู Case ของคนนั้น</p>';
-    $('tab-buyers').innerHTML = scorecardSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML + negoSection() + vendorSection() + apcSection();
+    $('tab-buyers').innerHTML = scorecardSection() + buyerValueSection() + '<h2>ภาพรวมงานรายคน</h2>' + $('tab-buyers').innerHTML + negoSection() + vendorSection() + apcSection();
     renderScorecard();
+    renderBuyerValue();
+    ['bvMethod', 'bvOpen'].forEach(function (id) {
+      $(id).addEventListener('click', function (e) {
+        var b = e.target.closest('button'); if (!b) return;
+        if (id === 'bvMethod') bvState.method = b.dataset.v; else bvState.open = b.dataset.v === 'true';
+        this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+        renderBuyerValue();
+      });
+    });
     renderVendorChart();
     renderApcChart();
     $('apcMethod').addEventListener('click', function (e) {
