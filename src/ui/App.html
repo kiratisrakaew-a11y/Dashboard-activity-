@@ -1209,11 +1209,13 @@
                 (r.cases.length > r.valued.length ? ' (ยังไม่มีราคา ' + (r.cases.length - r.valued.length) + ')' : ''));
               out.push('');
               if (r.team) {
-                out.push('Case ที่เปิดอยู่ ' + D.cases.filter(function (c) { return c.status === 'OPEN'; }).length + ' · Activity ทั้งหมด ' + D.activities.length);
+                var withAct = D.cases.filter(function (c) { return c.activityCount > 0; });
+                out.push('Case ที่เปิดอยู่ ' + D.cases.filter(function (c) { return c.status === 'OPEN'; }).length +
+                  ' · Activity เฉลี่ย ' + (withAct.length ? fmt(withAct.reduce(function (s, c) { return s + c.activityCount; }, 0) / withAct.length, 1) : '–') + ' ต่อ Case');
               } else {
                 var p = perf[r.email];
                 out.push('Scorecard: ' + (p && p.total != null ? fmt(p.total, 1) + ' คะแนน (อันดับ #' + rankOf[r.email] + ' จาก ' + ranked.length + ')' : '–'));
-                out.push('Case ที่เปิดอยู่ ' + r.b.openCases + ' · Activity ทั้งหมด ' + r.b.activitiesTotal + ' · Activity 7 วันล่าสุด ' + r.b.activities7d);
+                out.push('Case ที่เปิดอยู่ ' + r.b.openCases + ' · Activity เฉลี่ย ' + apcOf(r.email) + ' ต่อ Case');
               }
               return out;
             } } } },
