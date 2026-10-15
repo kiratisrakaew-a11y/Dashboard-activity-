@@ -38,7 +38,7 @@
   }
   function gradeBadge(score, grade, stale) {
     if (score === null || score === undefined) return '<span class="badge">ยังไม่ตรวจ</span>';
-    return '<span class="badge grade-' + esc(grade) + '" title="' + (stale ? 'เนื้อหา/เกณฑ์เปลี่ยน รอตรวจใหม่' : '') + '">' +
+    return '<span class="badge ' + scoreClass(score) + '" title="' + (stale ? 'เนื้อหา/เกณฑ์เปลี่ยน รอตรวจใหม่' : '') + '">' +
       esc(grade) + ' · ' + fmt(score) + (stale ? ' *' : '') + '</span>';
   }
   function scoreClass(s) {
