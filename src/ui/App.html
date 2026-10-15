@@ -43,7 +43,7 @@
   }
   function scoreClass(s) {
     if (s == null) return '';
-    return s >= 70 ? 'good' : s >= D.settings.SCORE_THRESHOLD ? 'warn' : 'bad';
+    return s >= D.settings.SCORE_THRESHOLD ? 'good' : s >= 50 ? 'warn' : 'bad';
   }
   function sheetLink(sheet, row, text) {
     var gid = D.meta.gids[sheet];

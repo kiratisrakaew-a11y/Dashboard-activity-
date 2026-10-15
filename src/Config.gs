@@ -11,7 +11,7 @@ var DEFAULTS = {
   AI_MODEL: '',                   // ว่าง = ใช้ DEFAULT_MODELS[provider]
   AI_EFFORT: 'low',               // ใช้กับ Claude เท่านั้น
   STALE_DAYS: 3,                  // Case ที่ไม่มี Activity เกินกี่วันถือว่านิ่ง
-  SCORE_THRESHOLD: 60,            // คะแนน AI ต่ำกว่านี้ = ต้องปรับปรุง
+  SCORE_THRESHOLD: 85,            // คะแนน AI ต่ำกว่านี้ = ต้องปรับปรุง
   MIN_QUOTES: 3,                  // จำนวน vendor ขั้นต่ำที่ควรเทียบราคา
   SHORT_DESC_CHARS: 30,           // คำอธิบายสั้นกว่านี้ = สั้นเกินไป
   BATCH_SIZE: 15,                 // จำนวน Activity ที่ AI ตรวจต่อรอบ
