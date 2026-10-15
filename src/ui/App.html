@@ -5,7 +5,8 @@
   var charts = {};
   var caseFilter = { buyer: '', dept: '', method: '', status: 'OPEN', flag: '', q: '' };
   var methodScope = 'OPEN';
-  var valueScope = 'ALL';     // กราฟสัดส่วนมูลค่า NORMAL/SPECIAL: OPEN | ALL   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
+  var valueScope = 'ALL';
+  var deptValueScope = 'ALL'; // กราฟมูลค่าตามแผนก: OPEN | ALL     // กราฟสัดส่วนมูลค่า NORMAL/SPECIAL: OPEN | ALL   // กราฟสัดส่วน NORMAL/SPECIAL: OPEN | ALL
   var lastDrill = null;
   var rankPeriod = { unit: 'month', date: '' };   // หน้า "จัดอันดับ" (date ว่าง = วันนี้)
   try { var rp = JSON.parse(localStorage.getItem('dash.rankPeriod') || 'null'); if (rp && rp.unit) rankPeriod = rp; } catch (e) {}
@@ -124,7 +125,7 @@
     var cfg = { type: 'bar', data: { labels: e.map(function (x) { return labeler ? labeler(x[0]) : x[0]; }),
       datasets: [{ data: e.map(function (x) { return x[1]; }), backgroundColor: cssVar('--accent'), borderRadius: 4 }] },
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false } },
-        scales: { x: { ticks: { precision: 0 } } } } };
+        scales: { x: { ticks: { precision: 0 } }, y: { ticks: { autoSkip: false } } } } };
     chart(id, onPick ? pickable(cfg, function (i) { onPick(e[i][0]); }) : cfg);
   }
   /** ค่าว่างถูกนับเป็น "(ว่าง)" ฝั่ง server (countBy_) — เทียบให้ตรงกัน */
@@ -260,6 +261,12 @@
         '<button data-scope="ALL" class="' + (methodScope === 'ALL' ? 'active' : '') + '">ทั้งหมด</button></div></div>' +
         '<div class="chart-box"><canvas id="chMethod"></canvas></div></div>' +
       '<div class="card"><h3>แนวโน้มรายสัปดาห์</h3><div class="chart-box"><canvas id="chWeekly"></canvas></div></div>' +
+      '<div class="card"><div class="card-head"><h3>มูลค่าโครงการตามแผนก</h3><div class="seg" id="deptValueScope">' +
+        '<button data-scope="OPEN" class="' + (deptValueScope === 'OPEN' ? 'active' : '') + '">เปิดอยู่</button>' +
+        '<button data-scope="ALL" class="' + (deptValueScope === 'ALL' ? 'active' : '') + '">ทั้งหมด</button></div></div>' +
+        '<div class="chart-box" id="dvBox"><canvas id="chDeptValue"></canvas></div>' +
+        '<div class="small muted"><span class="legend-dot" style="background:' + cssVar('--accent') + ';margin-left:0"></span>NORMAL' +
+        '<span class="legend-dot" style="background:' + cssVar('--warn') + '"></span>SPECIAL · คลิกแท่งหรือชื่อเพื่อดูรายการ Case</div></div>' +
       '<div class="card"><h3>Case เปิดอยู่ตามแผนก</h3><div class="chart-box"><canvas id="chDept"></canvas></div></div>' +
       '<div class="card"><h3>ขั้นตอนของ Case ที่เปิดอยู่</h3><div class="chart-box"><canvas id="chFunnel"></canvas></div></div>' +
       '<div class="card"><h3>Budget Type</h3><div class="chart-box"><canvas id="chBudget"></canvas></div></div>' +
@@ -286,6 +293,13 @@
     renderNegoPctChart('chNegoPctOverview', drillNego);
     renderMethodChart();
     renderMethodValueChart();
+    renderDeptValueChart();
+    $('deptValueScope').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      deptValueScope = b.dataset.scope;
+      this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+      renderDeptValueChart();
+    });
     $('valueScope').addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
       valueScope = b.dataset.scope;
@@ -335,6 +349,54 @@
   function pctLabel(ctx) {
     var total = ctx.dataset.data.reduce(function (s, v) { return s + v; }, 0);
     return ' ' + ctx.label + ': ' + fmt(ctx.parsed) + ' (' + (total ? fmt(ctx.parsed / total * 100, 1) : 0) + '%)';
+  }
+
+  /** มูลค่าโครงการตามแผนก (แท่งซ้อน NORMAL / SPECIAL) */
+  function renderDeptValueChart() {
+    var pool = D.cases.filter(function (c) { return deptValueScope === 'ALL' || c.status === 'OPEN'; });
+    var methods = ['NORMAL', 'SPECIAL'];
+    var groups = {};
+    pool.forEach(function (c) { var k = keyOf(c.dept); (groups[k] = groups[k] || []).push(c); });
+    var rows = Object.keys(groups).map(function (k) {
+      var cs = groups[k], r = { dept: k, cases: cs, valued: cs.filter(function (c) { return c.value; }) };
+      methods.forEach(function (m) { r[m] = cs.reduce(function (s, c) { return s + (c.value && c.method === m ? c.value.value : 0); }, 0); });
+      r.total = r.NORMAL + r.SPECIAL;
+      return r;
+    }).sort(function (a, b) { return b.total - a.total || b.cases.length - a.cases.length; });
+    $('dvBox').style.height = Math.max(200, rows.length * 30 + 50) + 'px';
+    var colors = { NORMAL: cssVar('--accent'), SPECIAL: cssVar('--warn') };
+    var endLabel = { id: 'dvLabel', afterDatasetsDraw: function (ch) {
+      var ctx = ch.ctx, metas = [0, 1].map(function (i) { return ch.getDatasetMeta(i); });
+      ctx.save(); ctx.font = '600 11px ' + Chart.defaults.font.family; ctx.textBaseline = 'middle'; ctx.fillStyle = cssVar('--text');
+      rows.forEach(function (r, i) {
+        if (!r.total) return;
+        var x = Math.max(metas[0].data[i].x, metas[1].data[i].x);
+        ctx.fillText(baht(Math.round(r.total)), x + 5, metas[0].data[i].y);
+      });
+      ctx.restore();
+    } };
+    chart('chDeptValue', pickable({ type: 'bar',
+      plugins: [endLabel, rowNotes(rows.map(function (r) { return r.total ? '' : 'ยังไม่มีตัวเลขราคา (' + r.cases.length + ' Case)'; }))],
+      data: { labels: rows.map(function (r) { return r.dept === '(ว่าง)' ? r.dept : r.dept + ' · ' + label('DEPARTMENT', r.dept); }),
+        datasets: methods.map(function (m) { return { label: m, data: rows.map(function (r) { return r[m]; }), backgroundColor: colors[m], borderRadius: 3 }; }) },
+      options: { indexAxis: 'y', maintainAspectRatio: false, interaction: { mode: 'index', axis: 'y', intersect: true },
+        plugins: { legend: { display: false },
+          tooltip: { displayColors: false, filter: function (it) { return it.datasetIndex === 0; }, callbacks: {
+            label: function (ctx) { var r = rows[ctx.dataIndex];
+              return ['NORMAL: ' + baht(Math.round(r.NORMAL)), 'SPECIAL: ' + baht(Math.round(r.SPECIAL)),
+                'รวม: ' + baht(Math.round(r.total)) + ' · มีราคา ' + r.valued.length + ' จาก ' + r.cases.length + ' Case']; } } } },
+        scales: { x: { stacked: true, beginAtZero: true, grace: '40%', ticks: { maxTicksLimit: 5, callback: function (v) { return fmt(v); } } },
+          y: { stacked: true, ticks: { autoSkip: false } } } } },
+    function (i, ds) {
+      var r = rows[i], m = ds == null ? null : methods[ds];
+      var list = r.cases.filter(function (c) { return !m || c.method === m; })
+        .sort(function (a, b) { return (b.value ? b.value.value : -1) - (a.value ? a.value.value : -1); });
+      var tot = list.reduce(function (s, c) { return s + (c.value ? c.value.value : 0); }, 0);
+      drill('มูลค่าโครงการ แผนก ' + r.dept + (m ? ' · ' + m : '') + (deptValueScope === 'ALL' ? '' : ' (เปิดอยู่)'), list, 'case',
+        { dept: r.dept === '(ว่าง)' ? '' : r.dept, method: m || '', status: deptValueScope === 'ALL' ? '' : 'OPEN' }, true,
+        { note: 'มูลค่ารวม <b>' + baht(Math.round(tot)) + '</b> จาก ' + list.filter(function (c) { return c.value; }).length + ' Case ที่มีราคา (ทั้งหมด ' + list.length + ' Case)',
+          extra: { th: 'มูลค่า', td: valueTd } });
+    }));
   }
 
   /** สัดส่วนมูลค่าโครงการ (ราคาสุดท้าย → เสนอแรก → ประมาณการ) แยก NORMAL / SPECIAL */
