@@ -1377,7 +1377,7 @@
     } };
     chart('chScore', pickable({ type: 'bar', plugins: [lbl], data: { labels: rows.map(function (p, i) { return '#' + (i + 1) + ' ' + p.name; }),
       datasets: [{ data: rows.map(function (p) { return p.total; }), borderRadius: 4,
-        backgroundColor: rows.map(function (p) { return cssVar('--' + (p.total >= 70 ? 'good' : p.total >= 50 ? 'warn' : 'bad')); }) }] },
+        backgroundColor: rows.map(function (p) { return cssVar('--' + scoreClass(p.total)); }) }] },
       options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false },
         tooltip: { callbacks: { label: function (ctx) { var p = rows[ctx.dataIndex];
           return SC_PARTS.map(function (x) { return x.label + ': ' + (p.parts[x.k] == null ? 'ไม่นับ' : fmt(p.parts[x.k], 0)); }); } } } },
